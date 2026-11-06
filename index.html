@@ -794,7 +794,7 @@ const estado = {
   pares: ["BTC-USD", "ETH-USD", "SOL-USD"],
   principal: "BTC-USD",
   tiempo: "15m",
-  auto: 0,
+  auto: 30,
   horizonte: 5,
   comision: 0.6,
   ver: {},
@@ -862,11 +862,18 @@ async function velasSuperiores(par, tiempo) {
 async function cargarPar(par, tiempo) {
   const seg = TIEMPOS[tiempo];
   const segH = TIEMPOS[MARCO_SUPERIOR[tiempo]];
-  const velas = cerradas(await pedirVelas(par, seg, VELAS), seg);
+  const crudas = await pedirVelas(par, seg, VELAS);
+  const velas = cerradas(crudas, seg);
   if (velas.length < 120) throw new Error("hay muy pocas velas cerradas");
   const velasH = await velasSuperiores(par, tiempo);
-  const ind = indicadores(velas, alinearHTF(velas, velasH, tendenciaHTF(velasH), seg, segH));
-  return { velas, ind, d: decidir(ind, velas.length - 1) };
+  const htf = tendenciaHTF(velasH);
+  const ind = indicadores(velas, alinearHTF(velas, velasH, htf, seg, segH));
+  // Las señales usan solo velas cerradas para no cambiar de opinión a mitad de la vela.
+  // El gráfico y el precio usan también la vela que se está formando, así se mueven en vivo.
+  const vistaVelas = crudas;
+  const vistaInd = indicadores(vistaVelas, alinearHTF(vistaVelas, velasH, htf, seg, segH));
+  const precio = crudas[crudas.length - 1].cierra;
+  return { velas, ind, d: decidir(ind, velas.length - 1), precio, vistaVelas, vistaInd };
 }
 
 async function cargarPrueba(par, tiempo, horizonte, comision) {
@@ -944,7 +951,7 @@ function tarjetaHTML(par) {
     cuerpo = `${encabezado}</div><p class="error">No se pudieron cargar los precios: ${esc(r.error)}.</p>`;
   } else {
     const { d, velas, ind } = r;
-    const ultima = velas[velas.length - 1].cierra;
+    const ultima = r.precio ?? velas[velas.length - 1].cierra;
     const primera = velas[0].cierra;
     const cambio = ((ultima - primera) / primera) * 100;
     const clase = d.senal === "LONG" ? "compra" : d.senal === "SHORT" ? "venta" : "espera";
@@ -975,7 +982,7 @@ function tarjetaHTML(par) {
       </div>
       <div class="barra" aria-hidden="true">${celdas}</div>
       ${niveles}
-      ${graficaCompleta(velas, ind)}
+      ${graficaCompleta(r.vistaVelas || velas, r.vistaInd || ind)}
       <p class="muted">Últimas 60 velas. Verde sube, rojo baja. Sobre el precio: EMA 9 y EMA 21. Debajo: volumen, RSI 14 (zonas de 30 y 70) y MACD.</p>
       <ul class="reglas">${reglas}</ul>`;
   }
@@ -1015,10 +1022,12 @@ function pintarGrafico() {
     return;
   }
   const W = Math.max(300, Math.min(1040, Math.floor(wrap.clientWidth || 640)));
-  wrap.innerHTML = graficoPrincipalSVG(r.velas, r.ind, r.d, r.tiempo, W, hoverIdx);
-  const idx = hoverIdx != null && hoverIdx < r.velas.length ? hoverIdx : r.velas.length - 1;
-  const v = r.velas[idx];
-  const prev = r.velas[idx - 1];
+  const vv = r.vistaVelas || r.velas;
+  const vi = r.vistaInd || r.ind;
+  wrap.innerHTML = graficoPrincipalSVG(vv, vi, r.d, r.tiempo, W, hoverIdx);
+  const idx = hoverIdx != null && hoverIdx < vv.length ? hoverIdx : vv.length - 1;
+  const v = vv[idx];
+  const prev = vv[idx - 1];
   const cambio = prev ? ((v.cierra - prev.cierra) / prev.cierra) * 100 : 0;
   info.textContent = `${etiquetaHora(v.t, r.tiempo)} · Apertura ${fmtPrecio(v.abre)} · Máx ${fmtPrecio(v.alto)} · Mín ${fmtPrecio(v.bajo)} · Cierre ${fmtPrecio(v.cierra)} · Vol ${fmtVol.format(v.volumen)} · ${fmtPct.format(cambio)}%`;
   const sg = r.d.senal ? `${r.d.senal} · puntaje ${r.d.puntaje > 0 ? "+" : ""}${r.d.puntaje}` : "sin datos";
