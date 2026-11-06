@@ -170,6 +170,12 @@ svg.grafica { display: block; width: 100%; max-width: 100%; height: auto; touch-
 .precios { text-align: right; }
 .precio { font: 500 21px/1.2 "IBM Plex Mono", ui-monospace, monospace; font-variant-numeric: tabular-nums; }
 .cambio { color: var(--muted); font: 400 12px "IBM Plex Mono", ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+.precio { transition: color 0.4s; }
+.precio.sube { color: var(--buy); }
+.precio.baja { color: var(--sell); }
+.flujo { margin-top: 8px; color: var(--muted); font-size: 12px; }
+.flujo .barra { height: 6px; border-radius: 3px; background: var(--sell); overflow: hidden; margin: 0 0 4px auto; max-width: 260px; }
+.flujo .b-compra { display: block; height: 100%; background: var(--buy); }
 
 .senal-fila { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 .senal { font-weight: 600; font-size: 13px; letter-spacing: .04em; padding: 4px 9px; border: 1.5px solid currentColor; border-radius: 4px; }
@@ -951,7 +957,7 @@ function tarjetaHTML(par) {
     cuerpo = `${encabezado}</div><p class="error">No se pudieron cargar los precios: ${esc(r.error)}.</p>`;
   } else {
     const { d, velas, ind } = r;
-    const ultima = r.precio ?? velas[velas.length - 1].cierra;
+    const ultima = r.precioVivo ?? r.precio ?? velas[velas.length - 1].cierra;
     const primera = velas[0].cierra;
     const cambio = ((ultima - primera) / primera) * 100;
     const clase = d.senal === "LONG" ? "compra" : d.senal === "SHORT" ? "venta" : "espera";
@@ -973,8 +979,9 @@ function tarjetaHTML(par) {
       </dl>
       <p class="muted">Niveles según volatilidad (ATR 14): stop a 1,5 ATR y objetivo a 3 ATR, relación 1:2. Son referencias para medir el riesgo, no órdenes.</p>` : "";
     cuerpo = `${encabezado}</div>
-        <div class="precios"><div class="precio">${fmtPrecio(ultima)}</div>
-        <div class="cambio">${fmtPct.format(cambio)}% en ${VELAS} velas</div></div>
+        <div class="precios"><div class="precio" data-precio="${par}">${fmtPrecio(ultima)}</div>
+        <div class="cambio">${fmtPct.format(cambio)}% en ${VELAS} velas</div>
+        <div class="flujo" data-flujo="${par}">${htmlFlujo(par)}</div></div>
       </div>
       <div class="senal-fila">
         <span class="senal ${clase}">${etiqueta}</span>
@@ -1161,6 +1168,101 @@ function registrar(par, r) {
   guardarRegistro();
 }
 
+// ----- Tiempo real: WebSocket de Coinbase (precio al instante y compra/venta de cada operación) -----
+const WS_URL = "wss://ws-feed.exchange.coinbase.com";
+const VENTANA_FLUJO_MS = 5 * 60 * 1000;
+const flujo = {}; // par -> operaciones recientes { t, tam, lado }
+let socket = null;
+let reintentoWS = null;
+let graficoPendiente = false;
+
+function conectarTiempoReal() {
+  clearTimeout(reintentoWS);
+  try {
+    socket = new WebSocket(WS_URL);
+  } catch (e) {
+    reintentoWS = setTimeout(conectarTiempoReal, 10000);
+    return;
+  }
+  socket.onopen = () => {
+    socket.send(JSON.stringify({ type: "subscribe", product_ids: [...estado.pares], channels: ["ticker", "matches"] }));
+  };
+  socket.onmessage = e => {
+    let m;
+    try { m = JSON.parse(e.data); } catch (err) { return; }
+    if (m.type === "ticker" && m.product_id && m.price) precioEnVivo(m.product_id, Number(m.price));
+    else if ((m.type === "match" || m.type === "last_match") && m.product_id) registrarOperacion(m);
+  };
+  socket.onclose = () => { reintentoWS = setTimeout(conectarTiempoReal, 5000); };
+  socket.onerror = () => { socket.close(); };
+}
+
+function precioEnVivo(par, p) {
+  const r = resultados[par];
+  if (!r || !r.ok || !Number.isFinite(p)) return;
+  const antes = r.precioVivo ?? r.precio;
+  r.precioVivo = p;
+  // La vela que se está formando sigue el precio al instante
+  const vv = r.vistaVelas;
+  if (vv && vv.length) {
+    const u = vv[vv.length - 1];
+    u.cierra = p;
+    u.alto = Math.max(u.alto, p);
+    u.bajo = Math.min(u.bajo, p);
+  }
+  const el = document.querySelector(`[data-precio="${par}"]`);
+  if (el) {
+    el.textContent = fmtPrecio(p);
+    el.classList.toggle("sube", antes != null && p > antes);
+    el.classList.toggle("baja", antes != null && p < antes);
+  }
+  pedirPintarGrafico();
+}
+
+function pedirPintarGrafico() {
+  if (graficoPendiente) return;
+  graficoPendiente = true;
+  setTimeout(() => { graficoPendiente = false; pintarGrafico(); }, 1000);
+}
+
+function registrarOperacion(m) {
+  const par = m.product_id;
+  const lista = flujo[par] || (flujo[par] = []);
+  const t = Date.parse(m.time) || Date.now();
+  // En el canal "matches", "side" es el lado de la orden que esperaba (maker).
+  // Si ese lado vendió, quien ejecutó la operación compró; si compró, vendió.
+  const lado = m.side === "sell" ? "compra" : "venta";
+  lista.push({ t, tam: Number(m.size) || 0, lado });
+  const corte = Date.now() - VENTANA_FLUJO_MS;
+  while (lista.length && lista[0].t < corte) lista.shift();
+  actualizarFlujo(par);
+}
+
+function resumenFlujo(par) {
+  const corte = Date.now() - VENTANA_FLUJO_MS;
+  let compra = 0, venta = 0;
+  for (const o of flujo[par] || []) {
+    if (o.t < corte) continue;
+    if (o.lado === "compra") compra += o.tam; else venta += o.tam;
+  }
+  const total = compra + venta;
+  return { compra, venta, pct: total > 0 ? (compra / total) * 100 : null };
+}
+
+function htmlFlujo(par) {
+  const f = resumenFlujo(par);
+  if (f.pct == null) return `<small>Compra y venta en vivo: esperando operaciones…</small>`;
+  const base = par.replace("-USD", "");
+  const cifra = v => v.toLocaleString("es", { maximumFractionDigits: 4 });
+  return `<div class="barra" title="Compra frente a venta en los últimos 5 minutos"><span class="b-compra" style="width:${f.pct.toFixed(1)}%"></span></div>
+    <small>Compra ${f.pct.toFixed(0)}% · Venta ${(100 - f.pct).toFixed(0)}% en 5 min (${cifra(f.compra)} / ${cifra(f.venta)} ${base})</small>`;
+}
+
+function actualizarFlujo(par) {
+  const el = document.querySelector(`[data-flujo="${par}"]`);
+  if (el) el.innerHTML = htmlFlujo(par);
+}
+
 function programar() {
   clearInterval(temporizador);
   if (estado.auto > 0) temporizador = setInterval(refrescar, estado.auto * 1000);
@@ -1289,6 +1391,8 @@ pintarTodas();
 pintarGrafico();
 pintarRegistro();
 programar();
+conectarTiempoReal();
+setInterval(() => estado.pares.forEach(par => actualizarFlujo(par)), 5000);
 refrescar();
 </script>
 </body>
