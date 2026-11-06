@@ -1,0 +1,1286 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Señales cripto</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Panel de lectura sobrio: texto en sans y cifras en mono para que se alineen.
+   El color de compra, venta y espera solo aparece en la señal, las velas y la barra de puntaje. */
+:root {
+  --bg: #EEF1F4;
+  --surface: #FFFFFF;
+  --ink: #141A22;
+  --muted: #5A6472;
+  --line: #D6DCE4;
+  --chip: #E4E9EF;
+  --accent: #2453A6;
+  --on-accent: #FFFFFF;
+  --buy: #17784E;
+  --sell: #A93F2E;
+  --hold: #5E6876;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0D1117;
+    --surface: #151B24;
+    --ink: #E6EAF0;
+    --muted: #8D98A7;
+    --line: #283140;
+    --chip: #1E2631;
+    --accent: #8DB2F5;
+    --on-accent: #0D1117;
+    --buy: #47C58C;
+    --sell: #F0806C;
+    --hold: #A1ABBA;
+    color-scheme: dark;
+  }
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font: 400 15px/1.5 "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  padding-block: 20px 32px;
+  padding-inline: max(16px, env(safe-area-inset-left, 0px)) max(16px, env(safe-area-inset-right, 0px));
+}
+.wrap { max-width: 1040px; margin: 0 auto; }
+h1 { font-size: 22px; line-height: 1.2; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+.sub { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+.marca { display: flex; align-items: center; gap: 10px; }
+.robot { width: 36px; height: 36px; flex: none; color: var(--accent); }
+.robot .ojo { transform-box: fill-box; transform-origin: center; animation: parpadeo 4s infinite; }
+@keyframes parpadeo {
+  0%, 92%, 100% { transform: scaleY(1); }
+  95% { transform: scaleY(.1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .robot .ojo { animation: none; }
+}
+
+.panel {
+  margin-top: 16px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 14px;
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+.fila { display: flex; flex-wrap: wrap; gap: 14px 24px; align-items: flex-end; }
+.fila.compacta { gap: 8px; }
+.grupo { display: grid; gap: 6px; min-width: 0; }
+.etiqueta { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.seg button {
+  border: 0; background: transparent; color: var(--muted);
+  padding: 7px 12px; min-height: 36px;
+  font: 500 13px "IBM Plex Mono", ui-monospace, monospace; cursor: pointer;
+}
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button[aria-pressed="true"] { background: var(--accent); color: var(--on-accent); }
+
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chips button {
+  border: 1px solid var(--line); background: var(--surface); color: var(--ink);
+  border-radius: 999px; padding: 5px 12px; min-height: 36px;
+  font: 500 13px "IBM Plex Mono", ui-monospace, monospace; cursor: pointer;
+}
+.chips button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+
+select, .btn {
+  font: 500 13px "IBM Plex Sans", system-ui, sans-serif;
+  color: var(--ink); background: var(--surface);
+  border: 1px solid var(--line); border-radius: 6px;
+  min-height: 36px; padding: 7px 10px;
+}
+.btn { cursor: pointer; }
+.btn.primario { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.btn:disabled { opacity: .55; cursor: wait; }
+button:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.estado { margin: 0; color: var(--muted); font-size: 13px; }
+.aviso { color: var(--muted); font-size: 12px; margin: 20px 0 0; }
+
+/* Gráfico principal */
+.principal-cab { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px 16px; align-items: flex-end; }
+#senal-actual { margin: 0; font-size: 13px; }
+#info-vela { margin: 0; font: 400 12px/1.5 "IBM Plex Mono", ui-monospace, monospace; color: var(--muted); font-variant-numeric: tabular-nums; min-height: 1.5em; }
+.grafico-wrap { width: 100%; min-width: 0; }
+.leyenda-g { margin: 0; color: var(--muted); font-size: 12px; }
+
+/* Estilos compartidos por los gráficos */
+svg.grafica { display: block; width: 100%; max-width: 100%; height: auto; touch-action: pan-y; user-select: none; -webkit-user-select: none; }
+.grafica .rej { stroke: var(--line); stroke-width: 1; }
+.grafica .eje { fill: var(--muted); font: 400 10px "IBM Plex Mono", ui-monospace, monospace; }
+.grafica .mecha { stroke-width: 1; }
+.grafica .mecha.alza { stroke: var(--buy); }
+.grafica .mecha.baja { stroke: var(--sell); }
+.grafica .cuerpo.alza, .grafica .vol.alza, .grafica .mh.alza { fill: var(--buy); }
+.grafica .cuerpo.baja, .grafica .vol.baja, .grafica .mh.baja { fill: var(--sell); }
+.grafica .vol { opacity: .45; }
+.grafica .e9 { fill: none; stroke: var(--accent); stroke-width: 1.3; }
+.grafica .e21 { fill: none; stroke: var(--ink); stroke-width: 1.1; opacity: .7; }
+.grafica .e50 { fill: none; stroke: var(--hold); stroke-width: 1.1; stroke-dasharray: 4 3; }
+.grafica .bb { fill: none; stroke: var(--hold); stroke-width: .8; opacity: .7; }
+.grafica .bb-area { fill: var(--hold); opacity: .07; }
+.grafica .rsi { fill: none; stroke: var(--accent); stroke-width: 1.2; }
+.grafica .nivel { stroke: var(--line); stroke-width: 1; stroke-dasharray: 3 3; }
+.grafica .cero { stroke: var(--muted); stroke-width: .6; }
+.grafica .marca-long { fill: var(--buy); }
+.grafica .marca-short { fill: var(--sell); }
+.grafica .nivel-obj { stroke: var(--buy); stroke-width: 1; stroke-dasharray: 5 4; }
+.grafica .nivel-stop { stroke: var(--sell); stroke-width: 1; stroke-dasharray: 5 4; }
+.grafica .nivel-ent { stroke: var(--ink); stroke-width: 1; stroke-dasharray: 2 3; }
+.grafica .etiq-obj { fill: var(--buy); font: 500 10px "IBM Plex Mono", ui-monospace, monospace; }
+.grafica .etiq-stop { fill: var(--sell); font: 500 10px "IBM Plex Mono", ui-monospace, monospace; }
+.grafica .etiq-ent { fill: var(--ink); font: 500 10px "IBM Plex Mono", ui-monospace, monospace; }
+.grafica .tag { fill: var(--ink); }
+.grafica .tag-cruz { fill: var(--accent); }
+.grafica .tag-t { fill: var(--surface); font: 500 10px "IBM Plex Mono", ui-monospace, monospace; }
+.grafica .cruz { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 2 2; }
+
+.card-grid-titulo { margin-top: 18px; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+.grid {
+  display: grid; gap: 14px; margin-top: 8px;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr));
+}
+.card {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 6px;
+  padding: 16px; display: flex; flex-direction: column; gap: 12px; min-width: 0;
+}
+.cab { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+.card.destacada { border-color: #F7931A; box-shadow: 0 0 0 1px #F7931A; }
+.par { display: flex; align-items: center; gap: 8px; }
+.btc-ico {
+  display: inline-grid; place-items: center; flex: none;
+  width: 26px; height: 26px; border-radius: 50%;
+  background: #F7931A; color: #FFFFFF; font: 700 16px/1 system-ui, sans-serif;
+}
+.par { font-weight: 600; font-size: 15px; }
+.nombre { color: var(--muted); font-size: 12px; }
+.precios { text-align: right; }
+.precio { font: 500 21px/1.2 "IBM Plex Mono", ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+.cambio { color: var(--muted); font: 400 12px "IBM Plex Mono", ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+
+.senal-fila { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.senal { font-weight: 600; font-size: 13px; letter-spacing: .04em; padding: 4px 9px; border: 1.5px solid currentColor; border-radius: 4px; }
+.senal.compra { color: var(--buy); }
+.senal.venta { color: var(--sell); }
+.senal.espera { color: var(--hold); }
+.puntaje { color: var(--muted); font: 400 12px "IBM Plex Mono", ui-monospace, monospace; }
+
+.barra { display: grid; grid-template-columns: repeat(13, 1fr); gap: 2px; }
+.barra span { height: 7px; border-radius: 2px; background: var(--line); }
+.barra span.centro { background: var(--muted); }
+.barra span.pos.on { background: var(--buy); }
+.barra span.neg.on { background: var(--sell); }
+
+.reglas { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: 13px; }
+.reglas li { display: grid; grid-template-columns: 34px 1fr; gap: 8px; align-items: start; }
+.pts { font: 500 12px "IBM Plex Mono", ui-monospace, monospace; text-align: center; background: var(--chip); border-radius: 3px; padding: 1px 0; }
+.pts.pos { color: var(--buy); }
+.pts.neg { color: var(--sell); }
+.pts.cero { color: var(--muted); }
+
+.acciones { display: flex; justify-content: flex-start; }
+.prueba { border-top: 1px solid var(--line); padding-top: 12px; display: grid; gap: 10px; font-size: 13px; }
+.metricas { margin: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); gap: 10px; }
+.metricas div { border: 1px solid var(--line); border-radius: 5px; padding: 8px 10px; min-width: 0; }
+.metricas dt { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+.metricas dd { margin: 2px 0 0; font: 500 15px "IBM Plex Mono", ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+.metricas dd small { display: block; font: 400 11px "IBM Plex Mono", ui-monospace, monospace; color: var(--muted); }
+.muted { color: var(--muted); margin: 0; font-size: 13px; }
+.error { color: var(--sell); margin: 0; font-size: 13px; }
+
+.registro {
+  margin-top: 14px; background: var(--surface); border: 1px solid var(--line);
+  border-radius: 6px; padding: 16px; display: grid; gap: 12px;
+}
+.filas { list-style: none; margin: 0; padding: 0; font-size: 13px; }
+.filas li {
+  display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap;
+  padding: 8px 0; border-top: 1px solid var(--line);
+}
+.res-acierto { color: var(--buy); font-weight: 600; }
+.res-fallo { color: var(--sell); font-weight: 600; }
+.res-pend { color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="marca">
+      <svg class="robot" viewBox="0 0 36 36" aria-hidden="true">
+        <line x1="18" y1="4" x2="18" y2="8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        <circle cx="18" cy="3" r="2" fill="currentColor"/>
+        <rect x="7" y="8" width="22" height="20" rx="5" fill="none" stroke="currentColor" stroke-width="2"/>
+        <circle class="ojo" cx="13.5" cy="17" r="2.6" fill="currentColor"/>
+        <circle class="ojo" cx="22.5" cy="17" r="2.6" fill="currentColor"/>
+        <line x1="14" y1="23" x2="22" y2="23" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        <rect x="3" y="15" width="3" height="6" rx="1" fill="currentColor"/>
+        <rect x="30" y="15" width="3" height="6" rx="1" fill="currentColor"/>
+      </svg>
+      <h1>Señales cripto</h1>
+    </div>
+    <p class="sub">Análisis técnico con precios públicos de Coinbase. Muestra señales LONG (comprar) o SHORT (vender) con niveles de riesgo. No opera por ti. Necesita conexión a internet.</p>
+  </header>
+
+  <section class="panel" aria-label="Opciones">
+    <div class="fila">
+      <div class="grupo">
+        <span class="etiqueta">Marco de tiempo</span>
+        <div class="seg" id="tiempos" role="group" aria-label="Marco de tiempo"></div>
+      </div>
+      <div class="grupo">
+        <label class="etiqueta" for="auto">Actualizar</label>
+        <div class="fila compacta">
+          <select id="auto">
+            <option value="0">Manual</option>
+            <option value="30">Cada 30 segundos</option>
+            <option value="60">Cada minuto</option>
+          </select>
+          <button class="btn primario" id="actualizar" type="button">Actualizar ahora</button>
+        </div>
+      </div>
+      <div class="grupo">
+        <span class="etiqueta">Prueba histórica</span>
+        <div class="fila compacta">
+          <select id="horizonte" aria-label="Velas máximas para cada operación">
+            <option value="3">máximo 3 velas</option>
+            <option value="5">máximo 5 velas</option>
+            <option value="10">máximo 10 velas</option>
+          </select>
+          <select id="comision" aria-label="Comisión por lado">
+            <option value="0.1">comisión 0,1%</option>
+            <option value="0.4">comisión 0,4%</option>
+            <option value="0.6">comisión 0,6%</option>
+            <option value="1">comisión 1%</option>
+          </select>
+        </div>
+      </div>
+    </div>
+    <div class="grupo">
+      <span class="etiqueta">Monedas</span>
+      <div class="chips" id="pares"></div>
+    </div>
+    <p class="estado" id="estado" aria-live="polite"></p>
+  </section>
+
+  <section class="panel principal" aria-label="Gráfico principal">
+    <div class="principal-cab">
+      <div class="grupo">
+        <label class="etiqueta" for="principal">Gráfico principal</label>
+        <select id="principal"></select>
+      </div>
+      <p id="senal-actual" class="muted"></p>
+    </div>
+    <p id="info-vela" aria-live="off"></p>
+    <div class="grafico-wrap" id="grafico-wrap"></div>
+    <p class="leyenda-g">Azul: EMA 9. Gris: EMA 21. Punteada: EMA 50. Banda: Bollinger 20. ▲ LONG y ▼ SHORT: señales pasadas. Líneas de ENT, STOP y OBJ: entrada, stop y objetivo de la señal actual. Toca o pasa el mouse sobre el gráfico para ver cada vela.</p>
+  </section>
+
+  <p class="card-grid-titulo">Resumen por moneda</p>
+  <main class="grid" id="tarjetas"></main>
+
+  <section class="registro" id="registro" aria-label="Registro en vivo"></section>
+
+  <p class="aviso">Análisis técnico automático con datos pasados. No es asesoría financiera y ninguna señal garantiza ganancias. En exchanges sin futuros, SHORT significa vender lo que ya tienes; no abre una posición corta. La prueba histórica y el registro en vivo no predicen el futuro.</p>
+</div>
+
+<script>
+// LOGICA-INICIO
+const TIEMPOS = { "1m": 60, "5m": 300, "15m": 900, "1h": 3600, "6h": 21600 };
+const MARCOS = ["1m", "5m", "15m", "1h"];
+const MARCO_SUPERIOR = { "1m": "15m", "5m": "1h", "15m": "1h", "1h": "6h" };
+
+function ema(valores, n) {
+  const salida = new Array(valores.length).fill(null);
+  if (valores.length < n) return salida;
+  const k = 2 / (n + 1);
+  let actual = valores.slice(0, n).reduce((s, x) => s + x, 0) / n;
+  salida[n - 1] = actual;
+  for (let i = n; i < valores.length; i++) {
+    actual = valores[i] * k + actual * (1 - k);
+    salida[i] = actual;
+  }
+  return salida;
+}
+
+function rsi(cierres, n = 14) {
+  const salida = new Array(cierres.length).fill(null);
+  if (cierres.length <= n) return salida;
+  const cambios = [];
+  for (let i = 1; i < cierres.length; i++) cambios.push(cierres[i] - cierres[i - 1]);
+  let ganancia = 0, perdida = 0;
+  for (let i = 0; i < n; i++) {
+    ganancia += Math.max(cambios[i], 0);
+    perdida += Math.max(-cambios[i], 0);
+  }
+  ganancia /= n;
+  perdida /= n;
+  salida[n] = perdida ? 100 - 100 / (1 + ganancia / perdida) : 100;
+  for (let i = n; i < cambios.length; i++) {
+    const c = cambios[i];
+    ganancia = (ganancia * (n - 1) + Math.max(c, 0)) / n;
+    perdida = (perdida * (n - 1) + Math.max(-c, 0)) / n;
+    salida[i + 1] = perdida ? 100 - 100 / (1 + ganancia / perdida) : 100;
+  }
+  return salida;
+}
+
+function macdHistograma(cierres, rapida = 12, lenta = 26, senal = 9) {
+  const eRap = ema(cierres, rapida);
+  const eLen = ema(cierres, lenta);
+  const linea = cierres.map((_, i) => (eRap[i] != null && eLen[i] != null ? eRap[i] - eLen[i] : null));
+  const primero = linea.findIndex(x => x != null);
+  if (primero < 0) return linea;
+  const sen = new Array(primero).fill(null).concat(ema(linea.slice(primero), senal));
+  return linea.map((l, i) => (l != null && sen[i] != null ? l - sen[i] : null));
+}
+
+// Bandas de Bollinger: media de 20 velas y dos desviaciones estándar.
+function bollinger(c, n = 20, k = 2) {
+  const mid = new Array(c.length).fill(null);
+  const up = new Array(c.length).fill(null);
+  const lo = new Array(c.length).fill(null);
+  for (let i = n - 1; i < c.length; i++) {
+    let s = 0;
+    for (let j = i - n + 1; j <= i; j++) s += c[j];
+    const m = s / n;
+    let v = 0;
+    for (let j = i - n + 1; j <= i; j++) v += (c[j] - m) * (c[j] - m);
+    const sd = Math.sqrt(v / n);
+    mid[i] = m;
+    up[i] = m + k * sd;
+    lo[i] = m - k * sd;
+  }
+  return { mid, up, lo };
+}
+
+// Filtro de mercado alterado (ver decidir): medidos en múltiplos del ATR.
+const UMBRAL_VELA = 2.5;   // rango de una sola vela
+const UMBRAL_TRAMO = 4;    // movimiento neto de las últimas 3 velas
+
+// Rango verdadero medio: mide cuánto se mueve el precio por vela.
+function atr(velas, n = 14) {
+  const salida = new Array(velas.length).fill(null);
+  if (velas.length <= n) return salida;
+  const tr = [];
+  for (let i = 1; i < velas.length; i++) {
+    const v = velas[i], pc = velas[i - 1].cierra;
+    tr.push(Math.max(v.alto - v.bajo, Math.abs(v.alto - pc), Math.abs(v.bajo - pc)));
+  }
+  let a = tr.slice(0, n).reduce((s, x) => s + x, 0) / n;
+  salida[n] = a;
+  for (let i = n; i < tr.length; i++) {
+    a = (a * (n - 1) + tr[i]) / n;
+    salida[i + 1] = a;
+  }
+  return salida;
+}
+
+// Tendencia del marco superior por vela: +1 alcista, -1 bajista, 0 sin clara.
+function tendenciaHTF(velasH) {
+  const c = velasH.map(v => v.cierra);
+  const e21 = ema(c, 21), e50 = ema(c, 50);
+  return e21.map((x, k) => (x == null || e50[k] == null ? 0 : x > e50[k] ? 1 : x < e50[k] ? -1 : 0));
+}
+
+// Para cada vela del marco actual, toma la última vela del marco superior ya cerrada.
+function alinearHTF(velas, velasH, tendH, seg, segH) {
+  const out = new Array(velas.length).fill(0);
+  let k = -1;
+  for (let i = 0; i < velas.length; i++) {
+    const limite = velas[i].t + seg;
+    while (k + 1 < velasH.length && velasH[k + 1].t + segH <= limite) k++;
+    out[i] = k >= 0 ? tendH[k] : 0;
+  }
+  return out;
+}
+
+function indicadores(velas, htf) {
+  const c = velas.map(v => v.cierra);
+  const vol = velas.map(v => v.volumen);
+  const volMedia = vol.map((_, i) => {
+    if (i < 20) return null;
+    let s = 0;
+    for (let j = i - 20; j < i; j++) s += vol[j];
+    return s / 20;
+  });
+  return {
+    velas, c,
+    e9: ema(c, 9), e21: ema(c, 21), e50: ema(c, 50),
+    rsi: rsi(c, 14), hist: macdHistograma(c), atr: atr(velas, 14),
+    bb: bollinger(c, 20, 2),
+    volMedia, htf: htf || new Array(c.length).fill(0),
+  };
+}
+
+// Puntaje de -6 a +6 con seis reglas de ±1. LONG con 3 o más, SHORT con -3 o menos.
+function decidir(ind, i) {
+  const v = ind.velas[i];
+  const c = v.cierra;
+  const e9 = ind.e9[i], e21 = ind.e21[i], e50 = ind.e50[i], r = ind.rsi[i];
+  const h = ind.hist[i], hAnt = ind.hist[i - 1], a = ind.atr[i], vm = ind.volMedia[i];
+  if ([e9, e21, e50, r, h, hAnt, a, vm].some(x => x == null)) {
+    return { senal: null, puntaje: 0, reglas: [{ texto: "faltan datos", pts: 0 }], niveles: null };
+  }
+  const reglas = [];
+  reglas.push(e9 > e21
+    ? { texto: "EMA 9 sobre EMA 21: impulso corto alcista", pts: 1 }
+    : { texto: "EMA 9 bajo EMA 21: impulso corto bajista", pts: -1 });
+  reglas.push(c > e50
+    ? { texto: "precio sobre EMA 50: tendencia de fondo alcista", pts: 1 }
+    : { texto: "precio bajo EMA 50: tendencia de fondo bajista", pts: -1 });
+  const t = ind.htf[i];
+  reglas.push(t > 0
+    ? { texto: "marco superior alcista (EMA 21 sobre EMA 50)", pts: 1 }
+    : t < 0
+      ? { texto: "marco superior bajista (EMA 21 bajo EMA 50)", pts: -1 }
+      : { texto: "marco superior sin tendencia clara", pts: 0 });
+  if (r < 30) reglas.push({ texto: `RSI ${r.toFixed(0)}: sobreventa, posible rebote`, pts: 1 });
+  else if (r > 70) reglas.push({ texto: `RSI ${r.toFixed(0)}: sobrecompra, posible caída`, pts: -1 });
+  else reglas.push({ texto: `RSI ${r.toFixed(0)}: zona neutral`, pts: 0 });
+  if (h > 0 && h > hAnt) reglas.push({ texto: "MACD con impulso alcista creciente", pts: 1 });
+  else if (h < 0 && h < hAnt) reglas.push({ texto: "MACD con impulso bajista creciente", pts: -1 });
+  else reglas.push({ texto: "MACD sin impulso claro", pts: 0 });
+  const alcista = v.cierra >= v.abre;
+  if (v.volumen > 1.2 * vm) {
+    reglas.push(alcista
+      ? { texto: "volumen alto en vela alcista", pts: 1 }
+      : { texto: "volumen alto en vela bajista", pts: -1 });
+  } else {
+    reglas.push({ texto: "volumen normal", pts: 0 });
+  }
+  const puntaje = reglas.reduce((s, x) => s + x.pts, 0);
+  // Si el mercado se mueve de golpe (vela muy grande o tramo corto muy largo frente al ATR),
+  // no se da señal aunque el puntaje la pida: en caos es mejor esperar.
+  const aPrev = ind.atr[i - 1] ?? a;
+  const rangoVela = v.alto - v.bajo;
+  const tramo = i >= 3 ? Math.abs(c - ind.velas[i - 3].cierra) : 0;
+  if (rangoVela > UMBRAL_VELA * aPrev || tramo > UMBRAL_TRAMO * aPrev) {
+    reglas.push({ texto: "mercado muy alterado: no se da señal, esperar", pts: 0 });
+    return { senal: "ESPERAR", puntaje, reglas, niveles: null, alterado: true };
+  }
+  const senal = puntaje >= 3 ? "LONG" : puntaje <= -3 ? "SHORT" : "ESPERAR";
+  let niveles = null;
+  if (senal !== "ESPERAR") {
+    const dir = senal === "LONG" ? 1 : -1;
+    niveles = { entrada: c, stop: c - dir * 1.5 * a, objetivo: c + dir * 3 * a, atr: a };
+  }
+  return { senal, puntaje, reglas, niveles };
+}
+
+// Sigue una señal en las velas posteriores: primero stop u objetivo, si no, cierre al horizonte.
+function resolverSenal(velas, i, senal, niveles, horizonte) {
+  const largo = senal === "LONG";
+  const entrada = velas[i].cierra;
+  const { stop, objetivo } = niveles;
+  const fin = (precio, motivo) => {
+    const ret = (precio - entrada) / entrada;
+    const bruto = largo ? ret : -ret;
+    return { bruto, acierto: bruto > 0, motivo, salida: precio };
+  };
+  for (let k = i + 1; k <= i + horizonte && k < velas.length; k++) {
+    const v = velas[k];
+    if (largo ? v.bajo <= stop : v.alto >= stop) return fin(stop, "stop");
+    if (largo ? v.alto >= objetivo : v.bajo <= objetivo) return fin(objetivo, "objetivo");
+  }
+  if (i + horizonte >= velas.length) return null;
+  return fin(velas[i + horizonte].cierra, "cierre");
+}
+
+function backtest(velas, ind, horizonte, comision) {
+  const res = [];
+  for (let i = 60; i < velas.length - horizonte; i++) {
+    const d = decidir(ind, i);
+    if (!d.niveles) continue;
+    const r = resolverSenal(velas, i, d.senal, d.niveles, horizonte);
+    if (!r) continue;
+    res.push({ i, acierto: r.acierto, bruto: r.bruto, neto: r.bruto - (2 * comision) / 100, motivo: r.motivo });
+  }
+  const c = velas.map(v => v.cierra);
+  return { res, mantener: ((c[c.length - 1] - c[0]) / c[0]) * 100, mitad: velas.length / 2 };
+}
+
+function metricas(lista) {
+  const n = lista.length;
+  if (!n) return { n: 0 };
+  const acierto = (lista.filter(x => x.acierto).length / n) * 100;
+  const netoOk = (lista.filter(x => x.neto > 0).length / n) * 100;
+  const prom = (lista.reduce((s, x) => s + x.neto, 0) / n) * 100;
+  const motivos = { objetivo: 0, stop: 0, cierre: 0 };
+  for (const x of lista) motivos[x.motivo]++;
+  return { n, acierto, netoOk, prom, motivos };
+}
+
+function cerradas(velas, seg, ahora = Date.now() / 1000) {
+  return velas.filter(v => v.t + seg <= ahora);
+}
+
+function nuevaEntrada(par, tiempo, horizonte, vela, senal, niveles, ahora) {
+  return {
+    id: `${par}|${tiempo}|${vela.t}`, par, tiempo, horizonte, senal,
+    velaT: vela.t, precio: niveles.entrada, stop: niveles.stop, objetivo: niveles.objetivo,
+    hora: ahora, resultado: null, motivo: null, salida: null,
+  };
+}
+
+function evaluarEntrada(e, velas) {
+  const i = velas.findIndex(v => v.t === e.velaT);
+  if (i < 0) return null;
+  return resolverSenal(velas, i, e.senal, { stop: e.stop, objetivo: e.objetivo }, e.horizonte);
+}
+// LOGICA-FIN
+
+// GRAFICO-INICIO
+function etiquetaHora(t, tiempo) {
+  const diario = TIEMPOS[tiempo] >= 3600;
+  const opts = diario
+    ? { timeZone: "America/Caracas", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }
+    : { timeZone: "America/Caracas", hour: "2-digit", minute: "2-digit", hour12: false };
+  return new Date(t * 1000).toLocaleString("es", opts);
+}
+
+// Gráfico principal con velas, medias, Bollinger, volumen, RSI, MACD, señales y niveles.
+function graficoPrincipalSVG(velas, ind, d, tiempo, W, hover, n = 120) {
+  const L = 10, R = 72, H = 490;
+  const P0 = 8, P1 = 262, V0 = 272, V1 = 330, Q0 = 340, Q1 = 398, M0 = 408, M1 = 466;
+  const ini = Math.max(0, velas.length - n);
+  const idx = [];
+  for (let i = ini; i < velas.length; i++) idx.push(i);
+  const m = idx.length;
+  const cw = (W - L - R) / m;
+  const X = k => L + (k + 0.5) * cw;
+  const f = v => v.toFixed(1);
+  const cuerpoW = Math.max(1, cw * 0.7);
+
+  const vals = [];
+  for (const i of idx) {
+    vals.push(velas[i].alto, velas[i].bajo);
+    for (const s of [ind.e9, ind.e21, ind.e50, ind.bb.up, ind.bb.lo]) if (s[i] != null) vals.push(s[i]);
+  }
+  if (d && d.niveles) vals.push(d.niveles.stop, d.niveles.objetivo);
+  let pmin = Math.min(...vals), pmax = Math.max(...vals);
+  const pad = (pmax - pmin) * 0.05 || 1;
+  pmin -= pad;
+  pmax += pad;
+  const YP = v => P0 + (1 - (v - pmin) / (pmax - pmin)) * (P1 - P0);
+  let s = "";
+
+  // Rejilla y escala de precio
+  for (let t = 0; t <= 4; t++) {
+    const v = pmin + ((pmax - pmin) * t) / 4;
+    s += `<line class="rej" x1="${L}" x2="${f(W - R)}" y1="${f(YP(v))}" y2="${f(YP(v))}"/>`;
+    s += `<text class="eje" x="${f(W - R + 6)}" y="${f(YP(v) + 4)}">${fmtPrecio(v)}</text>`;
+  }
+
+  // Bandas de Bollinger
+  const up = [], lo = [];
+  idx.forEach((i, k) => {
+    if (ind.bb.up[i] != null) {
+      up.push([X(k), YP(ind.bb.up[i])]);
+      lo.push([X(k), YP(ind.bb.lo[i])]);
+    }
+  });
+  if (up.length > 1) {
+    const area = up.concat([...lo].reverse()).map(([x, y]) => `${f(x)},${f(y)}`).join(" ");
+    s += `<polygon class="bb-area" points="${area}"/>`;
+    s += `<polyline class="bb" points="${up.map(([x, y]) => `${f(x)},${f(y)}`).join(" ")}"/>`;
+    s += `<polyline class="bb" points="${lo.map(([x, y]) => `${f(x)},${f(y)}`).join(" ")}"/>`;
+  }
+
+  // Velas
+  idx.forEach((i, k) => {
+    const v = velas[i];
+    const cls = v.cierra >= v.abre ? "alza" : "baja";
+    const x = X(k);
+    const arriba = YP(Math.max(v.abre, v.cierra)), abajo = YP(Math.min(v.abre, v.cierra));
+    s += `<line class="mecha ${cls}" x1="${f(x)}" x2="${f(x)}" y1="${f(YP(v.alto))}" y2="${f(YP(v.bajo))}"/>`;
+    s += `<rect class="cuerpo ${cls}" x="${f(x - cuerpoW / 2)}" y="${f(arriba)}" width="${f(cuerpoW)}" height="${f(Math.max(abajo - arriba, 1))}"/>`;
+  });
+
+  // Medias móviles
+  const linea = (serie, clase) => {
+    const pts = [];
+    idx.forEach((i, k) => { if (serie[i] != null) pts.push(`${f(X(k))},${f(YP(serie[i]))}`); });
+    return pts.length > 1 ? `<polyline class="${clase}" points="${pts.join(" ")}"/>` : "";
+  };
+  s += linea(ind.e50, "e50") + linea(ind.e21, "e21") + linea(ind.e9, "e9");
+
+  // Señales pasadas
+  idx.forEach((i, k) => {
+    if (i < 60) return;
+    const sg = decidir(ind, i).senal;
+    if (sg !== "LONG" && sg !== "SHORT") return;
+    const x = X(k), v = velas[i];
+    if (sg === "LONG") {
+      const y = YP(v.bajo) + 6;
+      s += `<path class="marca-long" d="M${f(x)},${f(y)} l-4.5,8 h9 z"/>`;
+    } else {
+      const y = YP(v.alto) - 6;
+      s += `<path class="marca-short" d="M${f(x)},${f(y)} l-4.5,-8 h9 z"/>`;
+    }
+  });
+
+  // Niveles de la señal actual
+  if (d && d.niveles) {
+    const nv = d.niveles;
+    const nivel = (val, clase, etq, etqClase) =>
+      `<line class="${clase}" x1="${L}" x2="${f(W - R)}" y1="${f(YP(val))}" y2="${f(YP(val))}"/>` +
+      `<text class="${etqClase}" x="${L + 4}" y="${f(YP(val) - 4)}">${etq} ${fmtPrecio(val)}</text>`;
+    s += nivel(nv.objetivo, "nivel-obj", "OBJ", "etiq-obj");
+    s += nivel(nv.entrada, "nivel-ent", "ENT", "etiq-ent");
+    s += nivel(nv.stop, "nivel-stop", "STOP", "etiq-stop");
+  }
+
+  // Volumen
+  const vmax = Math.max(...idx.map(i => velas[i].volumen)) || 1;
+  idx.forEach((i, k) => {
+    const v = velas[i];
+    const alto = (v.volumen / vmax) * (V1 - V0);
+    s += `<rect class="vol ${v.cierra >= v.abre ? "alza" : "baja"}" x="${f(X(k) - cuerpoW / 2)}" y="${f(V1 - alto)}" width="${f(cuerpoW)}" height="${f(Math.max(alto, 0.5))}"/>`;
+  });
+
+  // RSI
+  const YR = r => Q0 + (1 - r / 100) * (Q1 - Q0);
+  s += `<line class="nivel" x1="${L}" x2="${f(W - R)}" y1="${f(YR(70))}" y2="${f(YR(70))}"/>`;
+  s += `<line class="nivel" x1="${L}" x2="${f(W - R)}" y1="${f(YR(30))}" y2="${f(YR(30))}"/>`;
+  s += `<text class="eje" x="${f(W - R + 6)}" y="${f(YR(70) + 4)}">70</text>`;
+  s += `<text class="eje" x="${f(W - R + 6)}" y="${f(YR(30) + 4)}">30</text>`;
+  const rp = [];
+  idx.forEach((i, k) => { if (ind.rsi[i] != null) rp.push(`${f(X(k))},${f(YR(ind.rsi[i]))}`); });
+  if (rp.length > 1) s += `<polyline class="rsi" points="${rp.join(" ")}"/>`;
+
+  // MACD
+  const Mc = (M0 + M1) / 2;
+  const hmax = Math.max(...idx.map(i => Math.abs(ind.hist[i] ?? 0))) || 1;
+  idx.forEach((i, k) => {
+    const h = ind.hist[i];
+    if (h == null) return;
+    const alto = (Math.abs(h) / hmax) * ((M1 - M0) / 2);
+    const y = h >= 0 ? Mc - alto : Mc;
+    s += `<rect class="mh ${h >= 0 ? "alza" : "baja"}" x="${f(X(k) - cuerpoW / 2)}" y="${f(y)}" width="${f(cuerpoW)}" height="${f(Math.max(alto, 0.5))}"/>`;
+  });
+  s += `<line class="cero" x1="${L}" x2="${f(W - R)}" y1="${f(Mc)}" y2="${f(Mc)}"/>`;
+  s += `<text class="eje" x="${f(W - R + 6)}" y="${f(Mc + 4)}">0</text>`;
+
+  // Eje de tiempo
+  const paso = Math.max(1, Math.floor(m / 6));
+  idx.forEach((i, k) => {
+    if (k === 0 || k % paso !== 0) return;
+    s += `<text class="eje" x="${f(X(k))}" y="${M1 + 16}" text-anchor="middle">${etiquetaHora(velas[i].t, tiempo)}</text>`;
+  });
+
+  // Precio actual
+  const ult = velas[velas.length - 1];
+  const yt = YP(ult.cierra);
+  s += `<rect class="tag" x="${f(W - R + 2)}" y="${f(yt - 9)}" width="${R - 4}" height="18" rx="3"/>`;
+  s += `<text class="tag-t" x="${f(W - R + 6)}" y="${f(yt + 4)}">${fmtPrecio(ult.cierra)}</text>`;
+
+  // Cursor
+  if (hover != null && hover >= ini && hover < velas.length) {
+    const k = hover - ini, v = velas[hover], x = X(k), y = YP(v.cierra);
+    s += `<line class="cruz" x1="${f(x)}" x2="${f(x)}" y1="${P0}" y2="${M1}"/>`;
+    s += `<line class="cruz" x1="${L}" x2="${f(W - R)}" y1="${f(y)}" y2="${f(y)}"/>`;
+    s += `<rect class="tag tag-cruz" x="${f(W - R + 2)}" y="${f(y - 9)}" width="${R - 4}" height="18" rx="3"/>`;
+    s += `<text class="tag-t" x="${f(W - R + 6)}" y="${f(y + 4)}">${fmtPrecio(v.cierra)}</text>`;
+    s += `<rect class="tag tag-cruz" x="${f(x - 42)}" y="${M1 + 4}" width="84" height="16" rx="3"/>`;
+    s += `<text class="tag-t" x="${f(x)}" y="${M1 + 16}" text-anchor="middle">${etiquetaHora(v.t, tiempo)}</text>`;
+  }
+
+  return `<svg class="grafica" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" data-ini="${ini}" data-m="${m}" data-l="${L}" data-cw="${f(cw)}" role="img" aria-label="Gráfico de velas con medias, Bollinger, volumen, RSI y MACD">${s}</svg>`;
+}
+// GRAFICO-FIN
+
+// Gráfico compacto de cada tarjeta
+function graficaCompleta(velas, ind, n = 60) {
+  const W = 320, L = 4, R = 54, H = 270;
+  const ini = Math.max(0, velas.length - n);
+  const idx = [];
+  for (let i = ini; i < velas.length; i++) idx.push(i);
+  const m = idx.length;
+  const ancho = (W - L - R) / m;
+  const X = k => L + (k + 0.5) * ancho;
+  const f = v => v.toFixed(1);
+
+  const P0 = 6, P1 = 150;
+  const rangos = [];
+  for (const i of idx) {
+    rangos.push(velas[i].alto, velas[i].bajo);
+    if (ind.e9[i] != null) rangos.push(ind.e9[i]);
+    if (ind.e21[i] != null) rangos.push(ind.e21[i]);
+  }
+  const pmin = Math.min(...rangos), pmax = Math.max(...rangos), pr = pmax - pmin || 1;
+  const YP = v => P0 + (1 - (v - pmin) / pr) * (P1 - P0);
+  let svg = "";
+  idx.forEach((i, k) => {
+    const v = velas[i];
+    const cls = v.cierra >= v.abre ? "alza" : "baja";
+    const x = X(k);
+    const arriba = YP(Math.max(v.abre, v.cierra)), abajo = YP(Math.min(v.abre, v.cierra));
+    svg += `<line class="mecha ${cls}" x1="${f(x)}" x2="${f(x)}" y1="${f(YP(v.alto))}" y2="${f(YP(v.bajo))}"/>`;
+    svg += `<rect class="cuerpo ${cls}" x="${f(x - ancho * 0.35)}" y="${f(arriba)}" width="${f(ancho * 0.7)}" height="${f(Math.max(abajo - arriba, 1))}"/>`;
+  });
+  const linea = (serie, clase) => {
+    const pts = [];
+    idx.forEach((i, k) => { if (serie[i] != null) pts.push(`${f(X(k))},${f(YP(serie[i]))}`); });
+    return `<polyline class="${clase}" points="${pts.join(" ")}"/>`;
+  };
+  svg += linea(ind.e21, "e21") + linea(ind.e9, "e9");
+
+  const V0 = 160, V1 = 182;
+  const vmax = Math.max(...idx.map(i => velas[i].volumen)) || 1;
+  idx.forEach((i, k) => {
+    const v = velas[i];
+    const alto = (v.volumen / vmax) * (V1 - V0);
+    svg += `<rect class="vol ${v.cierra >= v.abre ? "alza" : "baja"}" x="${f(X(k) - ancho * 0.35)}" y="${f(V1 - alto)}" width="${f(ancho * 0.7)}" height="${f(Math.max(alto, 0.5))}"/>`;
+  });
+
+  const Q0 = 196, Q1 = 226;
+  const YR = r => Q0 + (1 - r / 100) * (Q1 - Q0);
+  svg += `<line class="nivel" x1="${L}" x2="${W - R}" y1="${f(YR(70))}" y2="${f(YR(70))}"/>`;
+  svg += `<line class="nivel" x1="${L}" x2="${W - R}" y1="${f(YR(30))}" y2="${f(YR(30))}"/>`;
+  const rp = [];
+  idx.forEach((i, k) => { if (ind.rsi[i] != null) rp.push(`${f(X(k))},${f(YR(ind.rsi[i]))}`); });
+  svg += `<polyline class="rsi" points="${rp.join(" ")}"/>`;
+
+  const M0 = 236, M1 = 266, Mc = (M0 + M1) / 2;
+  const hmax = Math.max(...idx.map(i => Math.abs(ind.hist[i] ?? 0))) || 1;
+  idx.forEach((i, k) => {
+    const h = ind.hist[i];
+    if (h == null) return;
+    const alto = (Math.abs(h) / hmax) * ((M1 - M0) / 2);
+    const y = h >= 0 ? Mc - alto : Mc;
+    svg += `<rect class="mh ${h >= 0 ? "alza" : "baja"}" x="${f(X(k) - ancho * 0.35)}" y="${f(y)}" width="${f(ancho * 0.7)}" height="${f(Math.max(alto, 0.5))}"/>`;
+  });
+  svg += `<line class="cero" x1="${L}" x2="${W - R}" y1="${f(Mc)}" y2="${f(Mc)}"/>`;
+
+  const eti = (y, t) => `<text class="eje" x="${W - R + 4}" y="${f(y)}">${t}</text>`;
+  const fe = v => (v >= 1000 ? Math.round(v).toLocaleString("es") : fmtPrecio(v));
+  svg += eti(P0 + 4, fe(pmax)) + eti(P1, fe(pmin));
+  svg += eti(V0 + 10, "Vol");
+  svg += eti(Q0 + 9, "RSI");
+  svg += eti(M0 + 9, "MACD");
+
+  return `<svg class="grafica" viewBox="0 0 ${W} ${H}" role="img" aria-label="Velas, volumen, RSI y MACD de los últimos ${m} periodos">${svg}</svg>`;
+}
+
+const API = "https://api.exchange.coinbase.com/products";
+const PARES = [
+  { id: "BTC-USD", nombre: "Bitcoin" },
+  { id: "ETH-USD", nombre: "Ethereum" },
+  { id: "SOL-USD", nombre: "Solana" },
+  { id: "XRP-USD", nombre: "XRP" },
+  { id: "DOGE-USD", nombre: "Dogecoin" },
+  { id: "ADA-USD", nombre: "Cardano" },
+  { id: "AVAX-USD", nombre: "Avalanche" },
+  { id: "LINK-USD", nombre: "Chainlink" },
+];
+const VELAS = 300;
+const CLAVE = "senales-cripto-v1";
+const CLAVE_REGISTRO = "senales-cripto-registro-v2";
+
+const estado = {
+  pares: ["BTC-USD", "ETH-USD", "SOL-USD"],
+  principal: "BTC-USD",
+  tiempo: "15m",
+  auto: 0,
+  horizonte: 5,
+  comision: 0.6,
+  ver: {},
+};
+const resultados = {};
+const pruebas = {};
+let registro = [];
+let cargando = false, pendiente = false, temporizador = null;
+let hoverIdx = null, anchoVisto = 0;
+
+const iso = ts => new Date(ts * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
+const esperar = ms => new Promise(r => setTimeout(r, ms));
+const fmtPct = new Intl.NumberFormat("es", { signDisplay: "exceptZero", minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const fmtDec = new Intl.NumberFormat("es", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+const fmt2 = new Intl.NumberFormat("es", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const fmtSig = new Intl.NumberFormat("es", { maximumSignificantDigits: 4 });
+const fmtVol = new Intl.NumberFormat("es", { notation: "compact", maximumFractionDigits: 1 });
+const fmtPrecio = p => (p >= 1 ? fmt2.format(p) : fmtSig.format(p));
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const nombreDe = par => (PARES.find(p => p.id === par) || { nombre: par }).nombre;
+const etiquetaPar = par => par.replace("-USD", " / USD");
+const claveActual = () => `${estado.tiempo}|${estado.horizonte}|${estado.comision}`;
+const horaCaracas = ms => new Date(ms).toLocaleTimeString("es", {
+  timeZone: "America/Caracas", hour: "2-digit", minute: "2-digit", second: "2-digit",
+});
+const porcentajeDe = (nivel, entrada) => fmtPct.format(((nivel - entrada) / entrada) * 100) + "%";
+const fmtMetrica = m => (m.n ? `${fmtDec.format(m.acierto)}% (${m.n})` : "—");
+
+async function pedirVelas(par, seg, cantidad) {
+  const velas = new Map();
+  let fin = Math.floor(Date.now() / 1000);
+  let intentos = 0;
+  const maxIntentos = Math.floor(cantidad / 100) + 5;
+  while (velas.size < cantidad && intentos < maxIntentos) {
+    const inicio = fin - 300 * seg;
+    const url = `${API}/${par}/candles?granularity=${seg}&start=${iso(inicio)}&end=${iso(fin)}`;
+    let resp;
+    try {
+      resp = await fetch(url);
+    } catch (e) {
+      throw new Error("no se pudo conectar con Coinbase desde este navegador");
+    }
+    if (!resp.ok) throw new Error(`Coinbase respondió ${resp.status}`);
+    const datos = await resp.json();
+    if (!Array.isArray(datos)) throw new Error(datos.message || "respuesta inesperada");
+    for (const [t, bajo, alto, abre, cierra, volumen] of datos) {
+      velas.set(t, { t, bajo, alto, abre, cierra, volumen });
+    }
+    fin = inicio;
+    intentos++;
+    await esperar(200);
+  }
+  return [...velas.values()].sort((a, b) => a.t - b.t).slice(-cantidad);
+}
+
+async function velasSuperiores(par, tiempo) {
+  const segH = TIEMPOS[MARCO_SUPERIOR[tiempo]];
+  try {
+    return cerradas(await pedirVelas(par, segH, 300), segH);
+  } catch (e) {
+    return [];
+  }
+}
+
+async function cargarPar(par, tiempo) {
+  const seg = TIEMPOS[tiempo];
+  const segH = TIEMPOS[MARCO_SUPERIOR[tiempo]];
+  const velas = cerradas(await pedirVelas(par, seg, VELAS), seg);
+  if (velas.length < 120) throw new Error("hay muy pocas velas cerradas");
+  const velasH = await velasSuperiores(par, tiempo);
+  const ind = indicadores(velas, alinearHTF(velas, velasH, tendenciaHTF(velasH), seg, segH));
+  return { velas, ind, d: decidir(ind, velas.length - 1) };
+}
+
+async function cargarPrueba(par, tiempo, horizonte, comision) {
+  const seg = TIEMPOS[tiempo];
+  const segH = TIEMPOS[MARCO_SUPERIOR[tiempo]];
+  const velas = cerradas(await pedirVelas(par, seg, 1000), seg);
+  const velasH = await velasSuperiores(par, tiempo);
+  const ind = indicadores(velas, alinearHTF(velas, velasH, tendenciaHTF(velasH), seg, segH));
+  const { res, mantener, mitad } = backtest(velas, ind, horizonte, comision);
+  return {
+    total: metricas(res),
+    primera: metricas(res.filter(x => x.i < mitad)),
+    segunda: metricas(res.filter(x => x.i >= mitad)),
+    mantener,
+  };
+}
+
+async function asegurarPrueba(par) {
+  const clave = claveActual();
+  const p = pruebas[par];
+  if (p && p.clave === clave) return;
+  pruebas[par] = { clave, cargando: true };
+  pintarTodas();
+  const { tiempo, horizonte, comision } = estado;
+  try {
+    const r = await cargarPrueba(par, tiempo, horizonte, comision);
+    if (pruebas[par].clave === clave) pruebas[par] = { clave, ...r };
+  } catch (e) {
+    if (pruebas[par].clave === clave) pruebas[par] = { clave, error: e.message };
+  }
+  pintarTodas();
+}
+
+function reabrirPruebas() {
+  for (const par of estado.pares) if (estado.ver[par]) asegurarPrueba(par);
+}
+
+function pruebaHTML(par) {
+  const p = pruebas[par];
+  const cabecera = `<span class="etiqueta">Prueba histórica · ${esc(etiquetaPar(par))} · marco ${esc(estado.tiempo)}</span>`;
+  if (!p || p.clave !== claveActual() || p.cargando) {
+    return `<div class="prueba">${cabecera}<p class="muted">Calculando con unas 1000 velas…</p></div>`;
+  }
+  if (p.error) {
+    return `<div class="prueba">${cabecera}<p class="error">No se pudo calcular: ${esc(p.error)}.</p></div>`;
+  }
+  const t = p.total;
+  if (!t.n) {
+    return `<div class="prueba">${cabecera}<p class="muted">Ninguna operación se completó en este historial.</p></div>`;
+  }
+  return `<div class="prueba">${cabecera}
+    <dl class="metricas">
+      <div><dt>Operaciones</dt><dd>${t.n}</dd></div>
+      <div><dt>Acierto</dt><dd>${fmtDec.format(t.acierto)}%</dd></div>
+      <div><dt>Ganadoras con comisión</dt><dd>${fmtDec.format(t.netoOk)}%</dd></div>
+      <div><dt>Promedio neto</dt><dd>${fmtPct.format(t.prom)}%</dd></div>
+      <div><dt>Salidas</dt><dd>${t.motivos.objetivo} obj · ${t.motivos.stop} stop<small>${t.motivos.cierre} al cierre del horizonte</small></dd></div>
+      <div><dt>Solo comprar y mantener</dt><dd>${fmtPct.format(p.mantener)}%</dd></div>
+      <div><dt>Primera mitad</dt><dd>${fmtMetrica(p.primera)}</dd></div>
+      <div><dt>Segunda mitad</dt><dd>${fmtMetrica(p.segunda)}</dd></div>
+    </dl>
+    <p class="muted">Cada operación se cierra en el stop, en el objetivo o al final del horizonte, con comisión por lado. Si la primera y la segunda mitad dan resultados muy distintos, la estrategia no es estable. Las operaciones se solapan y el resultado no es garantía.</p>
+  </div>`;
+}
+
+function tarjetaHTML(par) {
+  const r = resultados[par];
+  const abierta = !!estado.ver[par];
+  const encabezado = `<div class="cab">
+      <div><div class="par">${par === "BTC-USD" ? '<span class="btc-ico" aria-hidden="true">₿</span>' : ""}${esc(etiquetaPar(par))}</div><div class="nombre">${esc(nombreDe(par))}</div></div>`;
+  let cuerpo;
+  if (!r) {
+    cuerpo = `${encabezado}</div><p class="muted">Esperando datos…</p>`;
+  } else if (!r.ok) {
+    cuerpo = `${encabezado}</div><p class="error">No se pudieron cargar los precios: ${esc(r.error)}.</p>`;
+  } else {
+    const { d, velas, ind } = r;
+    const ultima = velas[velas.length - 1].cierra;
+    const primera = velas[0].cierra;
+    const cambio = ((ultima - primera) / primera) * 100;
+    const clase = d.senal === "LONG" ? "compra" : d.senal === "SHORT" ? "venta" : "espera";
+    const etiqueta = d.senal === "LONG" ? "LONG · comprar" : d.senal === "SHORT" ? "SHORT · vender" : d.alterado ? "ESPERAR · mercado alterado" : "ESPERAR";
+    const celdas = [-6, -5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5, 6].map(v => {
+      const on = (d.puntaje > 0 && v > 0 && v <= d.puntaje) || (d.puntaje < 0 && v < 0 && v >= d.puntaje);
+      const clases = [v > 0 ? "pos" : v < 0 ? "neg" : "centro", on ? "on" : ""].join(" ").trim();
+      return `<span class="${clases}"></span>`;
+    }).join("");
+    const reglas = d.reglas.map(x => {
+      const c = x.pts > 0 ? "pos" : x.pts < 0 ? "neg" : "cero";
+      const t = x.pts > 0 ? "+1" : x.pts < 0 ? "-1" : "0";
+      return `<li><span class="pts ${c}">${t}</span><span>${esc(x.texto)}</span></li>`;
+    }).join("");
+    const niveles = d.niveles ? `<dl class="metricas">
+        <div><dt>Entrada</dt><dd>${fmtPrecio(d.niveles.entrada)}</dd></div>
+        <div><dt>Stop</dt><dd>${fmtPrecio(d.niveles.stop)}<small>${porcentajeDe(d.niveles.stop, d.niveles.entrada)}</small></dd></div>
+        <div><dt>Objetivo</dt><dd>${fmtPrecio(d.niveles.objetivo)}<small>${porcentajeDe(d.niveles.objetivo, d.niveles.entrada)}</small></dd></div>
+      </dl>
+      <p class="muted">Niveles según volatilidad (ATR 14): stop a 1,5 ATR y objetivo a 3 ATR, relación 1:2. Son referencias para medir el riesgo, no órdenes.</p>` : "";
+    cuerpo = `${encabezado}</div>
+        <div class="precios"><div class="precio">${fmtPrecio(ultima)}</div>
+        <div class="cambio">${fmtPct.format(cambio)}% en ${VELAS} velas</div></div>
+      </div>
+      <div class="senal-fila">
+        <span class="senal ${clase}">${etiqueta}</span>
+        <span class="puntaje">puntaje ${d.puntaje > 0 ? "+" : ""}${d.puntaje} de -6 a +6 · marco ${esc(r.tiempo)} · superior ${esc(MARCO_SUPERIOR[r.tiempo])}</span>
+      </div>
+      <div class="barra" aria-hidden="true">${celdas}</div>
+      ${niveles}
+      ${graficaCompleta(velas, ind)}
+      <p class="muted">Últimas 60 velas. Verde sube, rojo baja. Sobre el precio: EMA 9 y EMA 21. Debajo: volumen, RSI 14 (zonas de 30 y 70) y MACD.</p>
+      <ul class="reglas">${reglas}</ul>`;
+  }
+  const boton = `<div class="acciones"><button class="btn" type="button" data-prueba="${esc(par)}" aria-expanded="${abierta}">${abierta ? "Ocultar prueba histórica" : "Ver prueba histórica"}</button></div>`;
+  return `${cuerpo}${boton}${abierta ? pruebaHTML(par) : ""}`;
+}
+
+function pintarTodas() {
+  const foco = document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.prueba : null;
+  const cont = document.getElementById("tarjetas");
+  cont.innerHTML = estado.pares
+    .map(par => `<article class="card${par === "BTC-USD" ? " destacada" : ""}" aria-label="${esc(nombreDe(par))}">${tarjetaHTML(par)}</article>`)
+    .join("");
+  if (foco) {
+    const b = cont.querySelector(`[data-prueba="${foco}"]`);
+    if (b) b.focus();
+  }
+}
+
+function pintarGrafico() {
+  const wrap = document.getElementById("grafico-wrap");
+  const info = document.getElementById("info-vela");
+  const senalTxt = document.getElementById("senal-actual");
+  const par = estado.principal;
+  const r = resultados[par];
+  anchoVisto = wrap.clientWidth;
+  if (!r) {
+    wrap.innerHTML = `<p class="muted">Esperando datos de ${esc(etiquetaPar(par))}…</p>`;
+    info.textContent = "";
+    senalTxt.textContent = "";
+    return;
+  }
+  if (!r.ok) {
+    wrap.innerHTML = `<p class="error">No hay datos para ${esc(etiquetaPar(par))}: ${esc(r.error)}.</p>`;
+    info.textContent = "";
+    senalTxt.textContent = "";
+    return;
+  }
+  const W = Math.max(300, Math.min(1040, Math.floor(wrap.clientWidth || 640)));
+  wrap.innerHTML = graficoPrincipalSVG(r.velas, r.ind, r.d, r.tiempo, W, hoverIdx);
+  const idx = hoverIdx != null && hoverIdx < r.velas.length ? hoverIdx : r.velas.length - 1;
+  const v = r.velas[idx];
+  const prev = r.velas[idx - 1];
+  const cambio = prev ? ((v.cierra - prev.cierra) / prev.cierra) * 100 : 0;
+  info.textContent = `${etiquetaHora(v.t, r.tiempo)} · Apertura ${fmtPrecio(v.abre)} · Máx ${fmtPrecio(v.alto)} · Mín ${fmtPrecio(v.bajo)} · Cierre ${fmtPrecio(v.cierra)} · Vol ${fmtVol.format(v.volumen)} · ${fmtPct.format(cambio)}%`;
+  const sg = r.d.senal ? `${r.d.senal} · puntaje ${r.d.puntaje > 0 ? "+" : ""}${r.d.puntaje}` : "sin datos";
+  senalTxt.innerHTML = `Señal actual de ${esc(etiquetaPar(par))}: <strong>${esc(sg)}</strong> · marco ${esc(r.tiempo)}`;
+}
+
+function indiceDesde(e) {
+  const wrap = document.getElementById("grafico-wrap");
+  const svg = wrap.querySelector("svg.grafica");
+  if (!svg) return null;
+  const rect = svg.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const ini = Number(svg.dataset.ini), m = Number(svg.dataset.m);
+  const L = Number(svg.dataset.l), cw = Number(svg.dataset.cw);
+  const k = Math.max(0, Math.min(m - 1, Math.floor((x - L) / cw)));
+  return ini + k;
+}
+
+function pintarRegistro() {
+  const cont = document.getElementById("registro");
+  const evaluadas = registro.filter(e => e.resultado);
+  const aciertos = evaluadas.filter(e => e.resultado === "acierto").length;
+  const pct = evaluadas.length ? `${fmtDec.format((aciertos / evaluadas.length) * 100)}%` : "—";
+  const filas = registro.slice(-10).reverse().map(e => {
+    const hora = new Date(e.hora).toLocaleTimeString("es", { timeZone: "America/Caracas", hour: "2-digit", minute: "2-digit" });
+    const estadoTxt = e.resultado === "acierto" ? `<span class="res-acierto">Acertó · ${esc(e.motivo)}</span>`
+      : e.resultado === "fallo" ? `<span class="res-fallo">Falló · ${esc(e.motivo)}</span>`
+      : `<span class="res-pend">Pendiente</span>`;
+    return `<li><span>${hora} · ${esc(etiquetaPar(e.par))} · ${esc(e.senal)} a ${fmtPrecio(e.precio)} · stop ${fmtPrecio(e.stop)} · objetivo ${fmtPrecio(e.objetivo)} · ${esc(e.tiempo)}</span>${estadoTxt}</li>`;
+  }).join("");
+  cont.innerHTML = `
+    <div class="cab">
+      <div><div class="par">Registro en vivo</div><div class="nombre">Señales anotadas automáticamente, sin dinero real</div></div>
+      <button class="btn" type="button" id="borrar-registro">Borrar registro</button>
+    </div>
+    <dl class="metricas">
+      <div><dt>Señales</dt><dd>${registro.length}</dd></div>
+      <div><dt>Evaluadas</dt><dd>${evaluadas.length}</dd></div>
+      <div><dt>Acierto</dt><dd>${pct}</dd></div>
+    </dl>
+    ${filas ? `<ul class="filas">${filas}</ul>` : `<p class="muted">Aún no hay señales LONG o SHORT. Deja la página abierta con actualización automática.</p>`}
+    <p class="muted">Con pocas señales el porcentaje no dice nada. Hacen falta decenas de señales evaluadas antes de sacar conclusiones.</p>`;
+}
+
+function pintarControles() {
+  if (!estado.pares.includes(estado.principal)) estado.principal = estado.pares[0];
+  document.getElementById("tiempos").innerHTML = MARCOS
+    .map(t => `<button type="button" data-tiempo="${t}" aria-pressed="${t === estado.tiempo}">${t}</button>`)
+    .join("");
+  document.getElementById("pares").innerHTML = PARES
+    .map(p => `<button type="button" data-par="${p.id}" title="${esc(p.nombre)}" aria-pressed="${estado.pares.includes(p.id)}">${esc(p.id.replace("-USD", ""))}</button>`)
+    .join("");
+  document.getElementById("principal").innerHTML = estado.pares
+    .map(p => `<option value="${p.replace(/"/g, "")}" ${p === estado.principal ? "selected" : ""}>${esc(etiquetaPar(p))}</option>`)
+    .join("");
+  document.getElementById("auto").value = String(estado.auto);
+  document.getElementById("horizonte").value = String(estado.horizonte);
+  document.getElementById("comision").value = String(estado.comision);
+}
+
+function leerPrefs() {
+  try {
+    const x = JSON.parse(localStorage.getItem(CLAVE) || "null");
+    if (!x) return;
+    const validos = PARES.map(p => p.id);
+    if (Array.isArray(x.pares)) {
+      const filtrados = x.pares.filter(p => validos.includes(p));
+      if (filtrados.length) estado.pares = filtrados;
+    }
+    if (validos.includes(x.principal)) estado.principal = x.principal;
+    if (MARCOS.includes(x.tiempo)) estado.tiempo = x.tiempo;
+    if ([0, 30, 60].includes(x.auto)) estado.auto = x.auto;
+    if ([3, 5, 10].includes(x.horizonte)) estado.horizonte = x.horizonte;
+    if ([0.1, 0.4, 0.6, 1].includes(x.comision)) estado.comision = x.comision;
+  } catch (e) {
+    // Sin almacenamiento disponible: se usan los valores por defecto.
+  }
+}
+
+function guardarPrefs() {
+  try {
+    localStorage.setItem(CLAVE, JSON.stringify({
+      pares: estado.pares,
+      principal: estado.principal,
+      tiempo: estado.tiempo,
+      auto: estado.auto,
+      horizonte: estado.horizonte,
+      comision: estado.comision,
+    }));
+  } catch (e) {
+    // Si no se puede guardar, la página sigue funcionando.
+  }
+}
+
+function leerRegistro() {
+  try {
+    const x = JSON.parse(localStorage.getItem(CLAVE_REGISTRO) || "[]");
+    return Array.isArray(x) ? x : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function guardarRegistro() {
+  try {
+    localStorage.setItem(CLAVE_REGISTRO, JSON.stringify(registro));
+  } catch (e) {
+    // Sin almacenamiento, el registro dura solo mientras la página esté abierta.
+  }
+}
+
+function registrar(par, r) {
+  const ultima = r.velas[r.velas.length - 1];
+  if (r.d.senal === "LONG" || r.d.senal === "SHORT") {
+    const id = `${par}|${r.tiempo}|${ultima.t}`;
+    if (!registro.some(e => e.id === id)) {
+      registro.push(nuevaEntrada(par, r.tiempo, estado.horizonte, ultima, r.d.senal, r.d.niveles, Date.now()));
+    }
+  }
+  for (const e of registro) {
+    if (e.par === par && e.tiempo === r.tiempo && e.resultado === null) {
+      const ev = evaluarEntrada(e, r.velas);
+      if (ev) {
+        e.resultado = ev.acierto ? "acierto" : "fallo";
+        e.motivo = ev.motivo;
+        e.salida = ev.salida;
+      }
+    }
+  }
+  registro = registro.slice(-300);
+  guardarRegistro();
+}
+
+function programar() {
+  clearInterval(temporizador);
+  if (estado.auto > 0) temporizador = setInterval(refrescar, estado.auto * 1000);
+}
+
+async function refrescar() {
+  if (cargando) { pendiente = true; return; }
+  cargando = true;
+  hoverIdx = null;
+  const tiempo = estado.tiempo;
+  const pares = [...estado.pares];
+  const btn = document.getElementById("actualizar");
+  const txt = document.getElementById("estado");
+  btn.disabled = true;
+  let fallos = 0;
+  for (let k = 0; k < pares.length; k++) {
+    txt.textContent = `Consultando ${pares[k].replace("-USD", "")} en marco ${tiempo} (${k + 1} de ${pares.length})…`;
+    try {
+      resultados[pares[k]] = { ok: true, tiempo, ...(await cargarPar(pares[k], tiempo)) };
+      registrar(pares[k], resultados[pares[k]]);
+    } catch (e) {
+      fallos++;
+      resultados[pares[k]] = { ok: false, tiempo, error: e.message };
+    }
+    pintarTodas();
+    pintarGrafico();
+    pintarRegistro();
+  }
+  txt.textContent = `Actualizado a las ${horaCaracas(Date.now())} (hora Venezuela)` + (fallos ? `. ${fallos} con error.` : ".");
+  btn.disabled = false;
+  cargando = false;
+  if (pendiente) { pendiente = false; refrescar(); }
+}
+
+document.getElementById("tiempos").addEventListener("click", e => {
+  const b = e.target.closest("button[data-tiempo]");
+  if (!b) return;
+  estado.tiempo = b.dataset.tiempo;
+  guardarPrefs();
+  pintarControles();
+  refrescar();
+  reabrirPruebas();
+});
+
+document.getElementById("pares").addEventListener("click", e => {
+  const b = e.target.closest("button[data-par]");
+  if (!b) return;
+  const par = b.dataset.par;
+  const estaba = estado.pares.includes(par);
+  if (estaba && estado.pares.length === 1) return;
+  estado.pares = PARES.map(p => p.id).filter(id => (id === par ? !estaba : estado.pares.includes(id)));
+  guardarPrefs();
+  pintarControles();
+  pintarTodas();
+  pintarGrafico();
+  refrescar();
+});
+
+document.getElementById("principal").addEventListener("change", e => {
+  estado.principal = e.target.value;
+  hoverIdx = null;
+  guardarPrefs();
+  pintarGrafico();
+});
+
+const wrapGrafico = document.getElementById("grafico-wrap");
+const alMover = e => {
+  const i = indiceDesde(e);
+  if (i != null && i !== hoverIdx) {
+    hoverIdx = i;
+    pintarGrafico();
+  }
+};
+wrapGrafico.addEventListener("pointermove", alMover);
+wrapGrafico.addEventListener("pointerdown", alMover);
+wrapGrafico.addEventListener("pointerleave", () => {
+  hoverIdx = null;
+  pintarGrafico();
+});
+if (typeof ResizeObserver !== "undefined") {
+  new ResizeObserver(() => {
+    if (Math.abs(wrapGrafico.clientWidth - anchoVisto) > 1) pintarGrafico();
+  }).observe(wrapGrafico);
+}
+
+document.getElementById("tarjetas").addEventListener("click", e => {
+  const b = e.target.closest("button[data-prueba]");
+  if (!b) return;
+  const par = b.dataset.prueba;
+  estado.ver[par] = !estado.ver[par];
+  pintarTodas();
+  if (estado.ver[par]) asegurarPrueba(par);
+});
+
+document.getElementById("registro").addEventListener("click", e => {
+  if (e.target.id !== "borrar-registro") return;
+  registro = [];
+  guardarRegistro();
+  pintarRegistro();
+});
+
+document.getElementById("auto").addEventListener("change", e => {
+  estado.auto = Number(e.target.value);
+  guardarPrefs();
+  programar();
+});
+
+document.getElementById("horizonte").addEventListener("change", e => {
+  estado.horizonte = Number(e.target.value);
+  guardarPrefs();
+  reabrirPruebas();
+});
+
+document.getElementById("comision").addEventListener("change", e => {
+  estado.comision = Number(e.target.value);
+  guardarPrefs();
+  reabrirPruebas();
+});
+
+document.getElementById("actualizar").addEventListener("click", refrescar);
+
+leerPrefs();
+registro = leerRegistro();
+pintarControles();
+pintarTodas();
+pintarGrafico();
+pintarRegistro();
+programar();
+refrescar();
+</script>
+</body>
+</html>
