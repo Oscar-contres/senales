@@ -174,8 +174,8 @@ svg.grafica { display: block; width: 100%; max-width: 100%; height: auto; touch-
 .precio.sube { color: var(--buy); }
 .precio.baja { color: var(--sell); }
 .flujo { margin-top: 8px; color: var(--muted); font-size: 12px; }
-.flujo .barra { height: 6px; border-radius: 3px; background: var(--sell); overflow: hidden; margin: 0 0 4px auto; max-width: 260px; }
-.flujo .b-compra { display: block; height: 100%; background: var(--buy); }
+.flujo .medidor { height: 6px; border-radius: 3px; background: var(--sell); overflow: hidden; margin: 0 0 4px auto; max-width: 260px; }
+.flujo .medidor-compra { display: block; height: 100%; background: var(--buy); }
 
 .senal-fila { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 .senal { font-weight: 600; font-size: 13px; letter-spacing: .04em; padding: 4px 9px; border: 1.5px solid currentColor; border-radius: 4px; }
@@ -237,7 +237,7 @@ svg.grafica { display: block; width: 100%; max-width: 100%; height: auto; touch-
       </svg>
       <h1>Señales cripto</h1>
     </div>
-    <p class="sub">Análisis técnico con precios públicos de Coinbase. Muestra señales LONG (comprar) o SHORT (vender) con niveles de riesgo. No opera por ti. Necesita conexión a internet.</p>
+    <p class="sub">Análisis técnico con precios públicos de Binance (mercado BTC/USDT). Muestra señales LONG (comprar) o SHORT (vender) con niveles de riesgo. No opera por ti. Necesita conexión a internet.</p>
   </header>
 
   <section class="panel" aria-label="Opciones">
@@ -781,7 +781,11 @@ function graficaCompleta(velas, ind, n = 60) {
   return `<svg class="grafica" viewBox="0 0 ${W} ${H}" role="img" aria-label="Velas, volumen, RSI y MACD de los últimos ${m} periodos">${svg}</svg>`;
 }
 
-const API = "https://api.exchange.coinbase.com/products";
+// Precios públicos de Binance (mismo mercado que TradingView: BTC/USDT).
+// Si el dominio principal no responde desde un país, se usa el de datos públicos.
+const API_BINANCE = ["https://api.binance.com", "https://data-api.binance.vision"];
+const INTERVALO_BINANCE = { 60: "1m", 300: "5m", 900: "15m", 3600: "1h", 21600: "6h" };
+const simbolo = par => par.replace("-USD", "USDT");
 const PARES = [
   { id: "BTC-USD", nombre: "Bitcoin" },
   { id: "ETH-USD", nombre: "Ethereum" },
@@ -821,7 +825,7 @@ const fmtVol = new Intl.NumberFormat("es", { notation: "compact", maximumFractio
 const fmtPrecio = p => (p >= 1 ? fmt2.format(p) : fmtSig.format(p));
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const nombreDe = par => (PARES.find(p => p.id === par) || { nombre: par }).nombre;
-const etiquetaPar = par => par.replace("-USD", " / USD");
+const etiquetaPar = par => par.replace("-USD", " / USDT");
 const claveActual = () => `${estado.tiempo}|${estado.horizonte}|${estado.comision}`;
 const horaCaracas = ms => new Date(ms).toLocaleTimeString("es", {
   timeZone: "America/Caracas", hour: "2-digit", minute: "2-digit", second: "2-digit",
@@ -830,30 +834,23 @@ const porcentajeDe = (nivel, entrada) => fmtPct.format(((nivel - entrada) / entr
 const fmtMetrica = m => (m.n ? `${fmtDec.format(m.acierto)}% (${m.n})` : "—");
 
 async function pedirVelas(par, seg, cantidad) {
-  const velas = new Map();
-  let fin = Math.floor(Date.now() / 1000);
-  let intentos = 0;
-  const maxIntentos = Math.floor(cantidad / 100) + 5;
-  while (velas.size < cantidad && intentos < maxIntentos) {
-    const inicio = fin - 300 * seg;
-    const url = `${API}/${par}/candles?granularity=${seg}&start=${iso(inicio)}&end=${iso(fin)}`;
-    let resp;
+  // Binance devuelve las velas de la más antigua a la más reciente.
+  // La última es la que se está formando: su cierre es el precio actual.
+  for (const base of API_BINANCE) {
     try {
-      resp = await fetch(url);
+      const url = `${base}/api/v3/klines?symbol=${simbolo(par)}&interval=${INTERVALO_BINANCE[seg]}&limit=${Math.min(cantidad, 1000)}`;
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error(`respondió ${resp.status}`);
+      const datos = await resp.json();
+      if (!Array.isArray(datos)) throw new Error(datos.msg || "respuesta inesperada");
+      return datos
+        .map(f => ({ t: Math.floor(f[0] / 1000), abre: +f[1], alto: +f[2], bajo: +f[3], cierra: +f[4], volumen: +f[5] }))
+        .slice(-cantidad);
     } catch (e) {
-      throw new Error("no se pudo conectar con Coinbase desde este navegador");
+      // Prueba con el siguiente dominio
     }
-    if (!resp.ok) throw new Error(`Coinbase respondió ${resp.status}`);
-    const datos = await resp.json();
-    if (!Array.isArray(datos)) throw new Error(datos.message || "respuesta inesperada");
-    for (const [t, bajo, alto, abre, cierra, volumen] of datos) {
-      velas.set(t, { t, bajo, alto, abre, cierra, volumen });
-    }
-    fin = inicio;
-    intentos++;
-    await esperar(200);
   }
-  return [...velas.values()].sort((a, b) => a.t - b.t).slice(-cantidad);
+  throw new Error("no se pudo conectar con Binance desde este navegador");
 }
 
 async function velasSuperiores(par, tiempo) {
@@ -1168,8 +1165,10 @@ function registrar(par, r) {
   guardarRegistro();
 }
 
-// ----- Tiempo real: WebSocket de Coinbase (precio al instante y compra/venta de cada operación) -----
-const WS_URL = "wss://ws-feed.exchange.coinbase.com";
+// ----- Tiempo real: WebSocket de Binance (precio al instante y compra/venta de cada operación) -----
+const WS_BINANCE = ["wss://stream.binance.com:9443", "wss://data-stream.binance.vision"];
+let hostWS = 0;
+const parDesdeSimbolo = s => PARES.map(p => p.id).find(id => simbolo(id) === s);
 const VENTANA_FLUJO_MS = 5 * 60 * 1000;
 const flujo = {}; // par -> operaciones recientes { t, tam, lado }
 let socket = null;
@@ -1178,23 +1177,26 @@ let graficoPendiente = false;
 
 function conectarTiempoReal() {
   clearTimeout(reintentoWS);
+  // Un flujo por moneda con las operaciones reales (trade): cada una trae precio, tamaño y lado.
+  const streams = estado.pares.map(par => `${simbolo(par).toLowerCase()}@trade`).join("/");
   try {
-    socket = new WebSocket(WS_URL);
+    socket = new WebSocket(`${WS_BINANCE[hostWS % WS_BINANCE.length]}/stream?streams=${streams}`);
   } catch (e) {
     reintentoWS = setTimeout(conectarTiempoReal, 10000);
     return;
   }
-  socket.onopen = () => {
-    socket.send(JSON.stringify({ type: "subscribe", product_ids: [...estado.pares], channels: ["ticker", "matches"] }));
-  };
   socket.onmessage = e => {
     let m;
     try { m = JSON.parse(e.data); } catch (err) { return; }
-    if (m.type === "ticker" && m.product_id && m.price) precioEnVivo(m.product_id, Number(m.price));
-    else if ((m.type === "match" || m.type === "last_match") && m.product_id) registrarOperacion(m);
+    const d = m.data || m;
+    if (d.e !== "trade") return;
+    const par = parDesdeSimbolo(d.s);
+    if (!par) return;
+    precioEnVivo(par, Number(d.p));
+    registrarOperacion(par, Number(d.q), d.T, d.m);
   };
   socket.onclose = () => { reintentoWS = setTimeout(conectarTiempoReal, 5000); };
-  socket.onerror = () => { socket.close(); };
+  socket.onerror = () => { hostWS++; socket.close(); };
 }
 
 function precioEnVivo(par, p) {
@@ -1225,17 +1227,13 @@ function pedirPintarGrafico() {
   setTimeout(() => { graficoPendiente = false; pintarGrafico(); }, 1000);
 }
 
-function registrarOperacion(m) {
-  const par = m.product_id;
+function registrarOperacion(par, tam, tMs, compradorEsMaker) {
   const lista = flujo[par] || (flujo[par] = []);
-  const t = Date.parse(m.time) || Date.now();
-  // En el canal "matches", "side" es el lado de la orden que esperaba (maker).
-  // Si ese lado vendió, quien ejecutó la operación compró; si compró, vendió.
-  const lado = m.side === "sell" ? "compra" : "venta";
-  lista.push({ t, tam: Number(m.size) || 0, lado });
+  // Si el comprador esperaba en el libro (maker), quien ejecutó la operación vendió.
+  const lado = compradorEsMaker ? "venta" : "compra";
+  lista.push({ t: tMs || Date.now(), tam: tam || 0, lado });
   const corte = Date.now() - VENTANA_FLUJO_MS;
   while (lista.length && lista[0].t < corte) lista.shift();
-  actualizarFlujo(par);
 }
 
 function resumenFlujo(par) {
@@ -1254,7 +1252,7 @@ function htmlFlujo(par) {
   if (f.pct == null) return `<small>Compra y venta en vivo: esperando operaciones…</small>`;
   const base = par.replace("-USD", "");
   const cifra = v => v.toLocaleString("es", { maximumFractionDigits: 4 });
-  return `<div class="barra" title="Compra frente a venta en los últimos 5 minutos"><span class="b-compra" style="width:${f.pct.toFixed(1)}%"></span></div>
+  return `<div class="medidor" title="Compra frente a venta en los últimos 5 minutos"><span class="medidor-compra" style="width:${f.pct.toFixed(1)}%"></span></div>
     <small>Compra ${f.pct.toFixed(0)}% · Venta ${(100 - f.pct).toFixed(0)}% en 5 min (${cifra(f.compra)} / ${cifra(f.venta)} ${base})</small>`;
 }
 
@@ -1314,6 +1312,7 @@ document.getElementById("pares").addEventListener("click", e => {
   const estaba = estado.pares.includes(par);
   if (estaba && estado.pares.length === 1) return;
   estado.pares = PARES.map(p => p.id).filter(id => (id === par ? !estaba : estado.pares.includes(id)));
+  if (socket) socket.close(); // reabre la conexión con las monedas nuevas
   guardarPrefs();
   pintarControles();
   pintarTodas();
