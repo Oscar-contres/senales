@@ -313,6 +313,15 @@ svg.grafica { display: block; width: 100%; max-width: 100%; height: auto; touch-
     <div id="comparar-resultado"></div>
   </section>
 
+  <section class="panel comparar" aria-label="Acierto sube o baja">
+    <div class="grupo">
+      <span class="etiqueta">Acierto sube o baja</span>
+      <p class="muted">Cada vez que el bot da una dirección, cuenta si el precio del siguiente periodo subió o bajó como dijo. Una moneda al aire acierta 50%. Por ahora no descuenta comisiones.</p>
+    </div>
+    <div class="acciones"><button class="btn primario" id="direccion-btn" type="button" onclick="ejecutarMedirDireccion()">Medir acierto sube o baja</button></div>
+    <div id="direccion-resultado"></div>
+  </section>
+
   <section class="registro" id="registro" aria-label="Registro en vivo"></section>
 
   <p class="aviso">Análisis técnico automático con datos pasados. No es asesoría financiera y ninguna señal garantiza ganancias. En exchanges sin futuros, SHORT significa vender lo que ya tienes; no abre una posición corta. La prueba histórica y el registro en vivo no predicen el futuro.</p>
@@ -429,7 +438,10 @@ function alinearHTF(velas, velasH, tendH, seg, segH) {
   return out;
 }
 
-function indicadores(velas, htf) {
+// En 5 y 15 minutos la señal solo vale si va a favor de la tendencia de 1 hora.
+const exigeTendencia = tiempo => tiempo === "5m" || tiempo === "15m";
+
+function indicadores(velas, htf, exigeTend = false) {
   const c = velas.map(v => v.cierra);
   const vol = velas.map(v => v.volumen);
   const volMedia = vol.map((_, i) => {
@@ -444,6 +456,7 @@ function indicadores(velas, htf) {
     rsi: rsi(c, 14), hist: macdHistograma(c), atr: atr(velas, 14),
     bb: bollinger(c, 20, 2),
     volMedia, htf: htf || new Array(c.length).fill(0),
+    exigeTend,
   };
 }
 
@@ -493,7 +506,11 @@ function decidir(ind, i, umbral = 3) {
     reglas.push({ texto: "mercado muy alterado: no se da señal, esperar", pts: 0 });
     return { senal: "ESPERAR", puntaje, reglas, niveles: null, alterado: true };
   }
-  const senal = puntaje >= umbral ? "LONG" : puntaje <= -umbral ? "SHORT" : "ESPERAR";
+  let senal = puntaje >= umbral ? "LONG" : puntaje <= -umbral ? "SHORT" : "ESPERAR";
+  if (ind.exigeTend && ((senal === "LONG" && t <= 0) || (senal === "SHORT" && t >= 0))) {
+    reglas.push({ texto: "va contra la tendencia de 1 hora: esperar", pts: 0 });
+    senal = "ESPERAR";
+  }
   let niveles = null;
   if (senal !== "ESPERAR") {
     const dir = senal === "LONG" ? 1 : -1;
@@ -886,11 +903,11 @@ async function cargarPar(par, tiempo) {
   if (velas.length < 120) throw new Error("hay muy pocas velas cerradas");
   const velasH = await velasSuperiores(par, tiempo);
   const htf = tendenciaHTF(velasH);
-  const ind = indicadores(velas, alinearHTF(velas, velasH, htf, seg, segH));
+  const ind = indicadores(velas, alinearHTF(velas, velasH, htf, seg, segH), exigeTendencia(tiempo));
   // Las señales usan solo velas cerradas para no cambiar de opinión a mitad de la vela.
   // El gráfico y el precio usan también la vela que se está formando, así se mueven en vivo.
   const vistaVelas = crudas;
-  const vistaInd = indicadores(vistaVelas, alinearHTF(vistaVelas, velasH, htf, seg, segH));
+  const vistaInd = indicadores(vistaVelas, alinearHTF(vistaVelas, velasH, htf, seg, segH), exigeTendencia(tiempo));
   const precio = crudas[crudas.length - 1].cierra;
   return { velas, ind, d: decidir(ind, velas.length - 1), precio, vistaVelas, vistaInd };
 }
@@ -900,7 +917,7 @@ async function cargarPrueba(par, tiempo, horizonte, comision) {
   const segH = TIEMPOS[MARCO_SUPERIOR[tiempo]];
   const velas = cerradas(await pedirVelas(par, seg, 1000), seg);
   const velasH = await velasSuperiores(par, tiempo);
-  const ind = indicadores(velas, alinearHTF(velas, velasH, tendenciaHTF(velasH), seg, segH));
+  const ind = indicadores(velas, alinearHTF(velas, velasH, tendenciaHTF(velasH), seg, segH), exigeTendencia(tiempo));
   const { res, mantener, mitad } = backtest(velas, ind, horizonte, comision);
   return {
     total: metricas(res),
@@ -919,7 +936,7 @@ async function compararUmbrales(par) {
     const segH = TIEMPOS[MARCO_SUPERIOR[tiempo]];
     const velas = cerradas(await pedirVelas(par, seg, 1000), seg);
     const velasH = await velasSuperiores(par, tiempo);
-    const ind = indicadores(velas, alinearHTF(velas, velasH, tendenciaHTF(velasH), seg, segH));
+    const ind = indicadores(velas, alinearHTF(velas, velasH, tendenciaHTF(velasH), seg, segH), exigeTendencia(tiempo));
     for (const umbral of [2, 3, 4]) {
       const { res, mitad } = backtest(velas, ind, horizonte, comision, umbral);
       filas.push({
@@ -965,6 +982,79 @@ function pintarComparacion() {
   cont.innerHTML = `<p class="muted">Par: ${esc(etiquetaPar(comparacion.par))}. Ganadoras son las operaciones que terminan con ganancia después de comisiones. Una regla es más confiable si gana en las dos mitades del historial.</p>
     <div class="tabla-wrap"><table class="tabla">
       <thead><tr><th>Marco</th><th>Umbral</th><th>Señales</th><th>Ganadoras</th><th>1.ª mitad</th><th>2.ª mitad</th><th>Promedio neto</th></tr></thead>
+      <tbody>${filas}</tbody>
+    </table></div>`;
+}
+
+// Acierto de dirección: el bot predice "sube" si el puntaje es positivo y "baja" si es negativo.
+// Se compara con el cierre del siguiente periodo del mismo marco.
+function medirDireccion(velas, ind) {
+  const res = [];
+  for (let i = 60; i < velas.length - 1; i++) {
+    const d = decidir(ind, i, 3);
+    if (!d || d.senal == null || !d.puntaje) continue;
+    const subio = velas[i + 1].cierra > velas[i].cierra;
+    const bajo = velas[i + 1].cierra < velas[i].cierra;
+    if (!subio && !bajo) continue;
+    const predijoSube = d.puntaje > 0;
+    res.push({ i, acerto: predijoSube === subio });
+  }
+  return res;
+}
+
+async function medirDireccionPar(par) {
+  const filas = [];
+  for (const tiempo of ["1m", "5m", "15m", "1h"]) {
+    const seg = TIEMPOS[tiempo];
+    const segH = TIEMPOS[MARCO_SUPERIOR[tiempo]];
+    const velas = cerradas(await pedirVelas(par, seg, 1000), seg);
+    const velasH = await velasSuperiores(par, tiempo);
+    const ind = indicadores(velas, alinearHTF(velas, velasH, tendenciaHTF(velasH), seg, segH), false);
+    const res = medirDireccion(velas, ind);
+    const mitad = Math.floor(velas.length / 2);
+    const pct = arr => (arr.length ? (arr.filter(x => x.acerto).length / arr.length) * 100 : null);
+    filas.push({
+      tiempo,
+      n: res.length,
+      total: pct(res),
+      primera: pct(res.filter(x => x.i < mitad)),
+      segunda: pct(res.filter(x => x.i >= mitad)),
+    });
+  }
+  return filas;
+}
+
+let direccion = null;
+let midiendoDir = false;
+
+async function ejecutarMedirDireccion() {
+  if (midiendoDir) return;
+  midiendoDir = true;
+  const par = estado.principal;
+  const btn = document.getElementById("direccion-btn");
+  btn.disabled = true;
+  document.getElementById("direccion-resultado").innerHTML = `<p class="muted">Midiendo… puede tardar unos segundos.</p>`;
+  try {
+    direccion = { par, filas: await medirDireccionPar(par) };
+  } catch (e) {
+    direccion = { par, error: e.message };
+  }
+  midiendoDir = false;
+  btn.disabled = false;
+  pintarDireccion();
+}
+
+function pintarDireccion() {
+  const cont = document.getElementById("direccion-resultado");
+  if (!direccion) { cont.innerHTML = ""; return; }
+  if (direccion.error) { cont.innerHTML = `<p class="error">No se pudo medir: ${esc(direccion.error)}.</p>`; return; }
+  const celda = v => (v == null ? "—" : `${fmtDec.format(v)}%`);
+  const filas = direccion.filas.map(f => `<tr>
+      <td>${esc(f.tiempo)}</td><td>${f.n}</td><td>${celda(f.total)}</td><td>${celda(f.primera)}</td><td>${celda(f.segunda)}</td>
+    </tr>`).join("");
+  cont.innerHTML = `<p class="muted">Par: ${esc(etiquetaPar(direccion.par))}. Compara la dirección con el siguiente periodo de cada marco. Para ganar en "sube o baja" hace falta estar claramente por encima de 50%, y después pagar comisiones.</p>
+    <div class="tabla-wrap"><table class="tabla">
+      <thead><tr><th>Marco</th><th>Predicciones</th><th>Acierto</th><th>1.ª mitad</th><th>2.ª mitad</th></tr></thead>
       <tbody>${filas}</tbody>
     </table></div>`;
 }
