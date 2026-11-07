@@ -206,6 +206,13 @@ svg.grafica { display: block; width: 100%; max-width: 100%; height: auto; touch-
 .metricas dd small { display: block; font: 400 11px "IBM Plex Mono", ui-monospace, monospace; color: var(--muted); }
 .muted { color: var(--muted); margin: 0; font-size: 13px; }
 .error { color: var(--sell); margin: 0; font-size: 13px; }
+.comparar { grid-template-columns: minmax(0, 1fr); }
+#comparar-resultado { min-width: 0; }
+.tabla-wrap { overflow-x: auto; margin-top: 10px; max-width: 100%; }
+.tabla { width: 100%; border-collapse: collapse; font: 12px/1.4 "IBM Plex Mono", ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+.tabla th, .tabla td { text-align: left; padding: 7px 6px; border-top: 1px solid var(--line); white-space: nowrap; }
+.tabla th { color: var(--muted); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+.tabla small { color: var(--muted); }
 
 .registro {
   margin-top: 14px; background: var(--surface); border: 1px solid var(--line);
@@ -296,6 +303,15 @@ svg.grafica { display: block; width: 100%; max-width: 100%; height: auto; touch-
 
   <p class="card-grid-titulo">Resumen por moneda</p>
   <main class="grid" id="tarjetas"></main>
+
+  <section class="panel comparar" aria-label="Comparar umbrales">
+    <div class="grupo">
+      <span class="etiqueta">Comparar reglas</span>
+      <p class="muted">Prueba histórica de cada marco de tiempo con umbrales 2, 3 y 4, usando la comisión y el máximo de velas que elegiste arriba. Tarda unos segundos.</p>
+    </div>
+    <div class="acciones"><button class="btn primario" id="comparar-btn" type="button" onclick="ejecutarComparacion()">Comparar umbrales del gráfico principal</button></div>
+    <div id="comparar-resultado"></div>
+  </section>
 
   <section class="registro" id="registro" aria-label="Registro en vivo"></section>
 
@@ -432,7 +448,7 @@ function indicadores(velas, htf) {
 }
 
 // Puntaje de -6 a +6 con seis reglas de ±1. LONG con 3 o más, SHORT con -3 o menos.
-function decidir(ind, i) {
+function decidir(ind, i, umbral = 3) {
   const v = ind.velas[i];
   const c = v.cierra;
   const e9 = ind.e9[i], e21 = ind.e21[i], e50 = ind.e50[i], r = ind.rsi[i];
@@ -477,7 +493,7 @@ function decidir(ind, i) {
     reglas.push({ texto: "mercado muy alterado: no se da señal, esperar", pts: 0 });
     return { senal: "ESPERAR", puntaje, reglas, niveles: null, alterado: true };
   }
-  const senal = puntaje >= 3 ? "LONG" : puntaje <= -3 ? "SHORT" : "ESPERAR";
+  const senal = puntaje >= umbral ? "LONG" : puntaje <= -umbral ? "SHORT" : "ESPERAR";
   let niveles = null;
   if (senal !== "ESPERAR") {
     const dir = senal === "LONG" ? 1 : -1;
@@ -505,10 +521,10 @@ function resolverSenal(velas, i, senal, niveles, horizonte) {
   return fin(velas[i + horizonte].cierra, "cierre");
 }
 
-function backtest(velas, ind, horizonte, comision) {
+function backtest(velas, ind, horizonte, comision, umbral = 3) {
   const res = [];
   for (let i = 60; i < velas.length - horizonte; i++) {
-    const d = decidir(ind, i);
+    const d = decidir(ind, i, umbral);
     if (!d.niveles) continue;
     const r = resolverSenal(velas, i, d.senal, d.niveles, horizonte);
     if (!r) continue;
@@ -892,6 +908,65 @@ async function cargarPrueba(par, tiempo, horizonte, comision) {
     segunda: metricas(res.filter(x => x.i >= mitad)),
     mantener,
   };
+}
+
+// Compara cada marco (1m a 1h) con umbrales 2, 3 y 4, usando tu comisión y máximo de velas.
+async function compararUmbrales(par) {
+  const { horizonte, comision } = estado;
+  const filas = [];
+  for (const tiempo of ["1m", "5m", "15m", "1h"]) {
+    const seg = TIEMPOS[tiempo];
+    const segH = TIEMPOS[MARCO_SUPERIOR[tiempo]];
+    const velas = cerradas(await pedirVelas(par, seg, 1000), seg);
+    const velasH = await velasSuperiores(par, tiempo);
+    const ind = indicadores(velas, alinearHTF(velas, velasH, tendenciaHTF(velasH), seg, segH));
+    for (const umbral of [2, 3, 4]) {
+      const { res, mitad } = backtest(velas, ind, horizonte, comision, umbral);
+      filas.push({
+        tiempo, umbral,
+        total: metricas(res),
+        primera: metricas(res.filter(x => x.i < mitad)),
+        segunda: metricas(res.filter(x => x.i >= mitad)),
+      });
+    }
+  }
+  return filas;
+}
+
+let comparacion = null;
+let comparando = false;
+
+async function ejecutarComparacion() {
+  if (comparando) return;
+  comparando = true;
+  const par = estado.principal;
+  const btn = document.getElementById("comparar-btn");
+  btn.disabled = true;
+  document.getElementById("comparar-resultado").innerHTML = `<p class="muted">Calculando… puede tardar unos segundos.</p>`;
+  try {
+    comparacion = { par, filas: await compararUmbrales(par) };
+  } catch (e) {
+    comparacion = { par, error: e.message };
+  }
+  comparando = false;
+  btn.disabled = false;
+  pintarComparacion();
+}
+
+function pintarComparacion() {
+  const cont = document.getElementById("comparar-resultado");
+  if (!comparacion) { cont.innerHTML = ""; return; }
+  if (comparacion.error) { cont.innerHTML = `<p class="error">No se pudo calcular: ${esc(comparacion.error)}.</p>`; return; }
+  const celda = m => (!m || !m.n ? "—" : `${fmtDec.format(m.netoOk)}% <small>(${m.n})</small>`);
+  const filas = comparacion.filas.map(f => `<tr>
+      <td>${esc(f.tiempo)}</td><td>${f.umbral}</td><td>${f.total.n || 0}</td>
+      <td>${celda(f.total)}</td><td>${celda(f.primera)}</td><td>${celda(f.segunda)}</td>
+      <td>${f.total.n ? fmtPct.format(f.total.prom) + "%" : "—"}</td></tr>`).join("");
+  cont.innerHTML = `<p class="muted">Par: ${esc(etiquetaPar(comparacion.par))}. Ganadoras son las operaciones que terminan con ganancia después de comisiones. Una regla es más confiable si gana en las dos mitades del historial.</p>
+    <div class="tabla-wrap"><table class="tabla">
+      <thead><tr><th>Marco</th><th>Umbral</th><th>Señales</th><th>Ganadoras</th><th>1.ª mitad</th><th>2.ª mitad</th><th>Promedio neto</th></tr></thead>
+      <tbody>${filas}</tbody>
+    </table></div>`;
 }
 
 async function asegurarPrueba(par) {
