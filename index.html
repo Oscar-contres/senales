@@ -988,15 +988,28 @@ function pintarComparacion() {
 
 // Acierto de dirección: el bot predice "sube" si el puntaje es positivo y "baja" si es negativo.
 // Se compara con el cierre del siguiente periodo del mismo marco.
-function medirDireccion(velas, ind) {
+// Dos reglas de predicción:
+// "puntaje": sube si el puntaje es positivo, baja si es negativo (las seis reglas).
+// "tendencia": sube si el precio está sobre la EMA 50 y el marco de 1 hora también sube; baja al revés.
+//   Si no se cumple ninguna de las dos condiciones, no predice.
+function medirDireccion(velas, ind, regla = "puntaje") {
   const res = [];
   for (let i = 60; i < velas.length - 1; i++) {
-    const d = decidir(ind, i, 3);
-    if (!d || d.senal == null || !d.puntaje) continue;
+    let predijoSube = null;
+    if (regla === "puntaje") {
+      const d = decidir(ind, i, 3);
+      if (!d || d.senal == null || !d.puntaje) continue;
+      predijoSube = d.puntaje > 0;
+    } else {
+      const c = velas[i].cierra, e50 = ind.e50[i], t = ind.htf[i];
+      if (e50 == null) continue;
+      if (c > e50 && t > 0) predijoSube = true;
+      else if (c < e50 && t < 0) predijoSube = false;
+      else continue;
+    }
     const subio = velas[i + 1].cierra > velas[i].cierra;
     const bajo = velas[i + 1].cierra < velas[i].cierra;
     if (!subio && !bajo) continue;
-    const predijoSube = d.puntaje > 0;
     res.push({ i, acerto: predijoSube === subio });
   }
   return res;
@@ -1010,16 +1023,19 @@ async function medirDireccionPar(par) {
     const velas = cerradas(await pedirVelas(par, seg, 1000), seg);
     const velasH = await velasSuperiores(par, tiempo);
     const ind = indicadores(velas, alinearHTF(velas, velasH, tendenciaHTF(velasH), seg, segH), false);
-    const res = medirDireccion(velas, ind);
     const mitad = Math.floor(velas.length / 2);
     const pct = arr => (arr.length ? (arr.filter(x => x.acerto).length / arr.length) * 100 : null);
-    filas.push({
-      tiempo,
-      n: res.length,
-      total: pct(res),
-      primera: pct(res.filter(x => x.i < mitad)),
-      segunda: pct(res.filter(x => x.i >= mitad)),
-    });
+    for (const regla of ["puntaje", "tendencia"]) {
+      const res = medirDireccion(velas, ind, regla);
+      filas.push({
+        tiempo,
+        regla,
+        n: res.length,
+        total: pct(res),
+        primera: pct(res.filter(x => x.i < mitad)),
+        segunda: pct(res.filter(x => x.i >= mitad)),
+      });
+    }
   }
   return filas;
 }
@@ -1050,11 +1066,11 @@ function pintarDireccion() {
   if (direccion.error) { cont.innerHTML = `<p class="error">No se pudo medir: ${esc(direccion.error)}.</p>`; return; }
   const celda = v => (v == null ? "—" : `${fmtDec.format(v)}%`);
   const filas = direccion.filas.map(f => `<tr>
-      <td>${esc(f.tiempo)}</td><td>${f.n}</td><td>${celda(f.total)}</td><td>${celda(f.primera)}</td><td>${celda(f.segunda)}</td>
+      <td>${esc(f.tiempo)}</td><td>${f.regla === "puntaje" ? "Puntaje" : "Tendencia"}</td><td>${f.n}</td><td>${celda(f.total)}</td><td>${celda(f.primera)}</td><td>${celda(f.segunda)}</td>
     </tr>`).join("");
-  cont.innerHTML = `<p class="muted">Par: ${esc(etiquetaPar(direccion.par))}. Compara la dirección con el siguiente periodo de cada marco. Para ganar en "sube o baja" hace falta estar claramente por encima de 50%, y después pagar comisiones.</p>
+  cont.innerHTML = `<p class="muted">Par: ${esc(etiquetaPar(direccion.par))}. Compara la dirección con el siguiente periodo de cada marco. Puntaje usa las seis reglas. Tendencia sigue al precio frente a la EMA 50 y al marco de 1 hora, y no predice si no coinciden. Para ganar en "sube o baja" hace falta estar claramente por encima de 50%, y después pagar comisiones.</p>
     <div class="tabla-wrap"><table class="tabla">
-      <thead><tr><th>Marco</th><th>Predicciones</th><th>Acierto</th><th>1.ª mitad</th><th>2.ª mitad</th></tr></thead>
+      <thead><tr><th>Marco</th><th>Regla</th><th>Predicciones</th><th>Acierto</th><th>1.ª mitad</th><th>2.ª mitad</th></tr></thead>
       <tbody>${filas}</tbody>
     </table></div>`;
 }
