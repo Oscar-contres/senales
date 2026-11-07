@@ -295,6 +295,8 @@ svg.grafica { display: block; width: 100%; max-width: 100%; height: auto; touch-
         <select id="principal"></select>
       </div>
       <p id="senal-actual" class="muted"></p>
+      <p id="cierre-vela" class="muted"></p>
+      <p id="historico-senal" class="muted"></p>
     </div>
     <p id="info-vela" aria-live="off"></p>
     <div class="grafico-wrap" id="grafico-wrap"></div>
@@ -317,6 +319,11 @@ svg.grafica { display: block; width: 100%; max-width: 100%; height: auto; touch-
     <div class="grupo">
       <span class="etiqueta">Acierto sube o baja</span>
       <p class="muted">Cada vez que el bot da una dirección, cuenta si el precio del siguiente periodo subió o bajó como dijo. Una moneda al aire acierta 50%. Por ahora no descuenta comisiones.</p>
+      <label class="etiqueta" for="historial-modo">Historial</label>
+      <select id="historial-modo" style="width:100%;max-width:100%">
+        <option value="largo" selected>Largo: de 1 mes a 1 año</option>
+        <option value="corto">Corto: últimas 1000 velas</option>
+      </select>
     </div>
     <div class="acciones"><button class="btn primario" id="direccion-btn" type="button" onclick="ejecutarMedirDireccion()">Medir acierto sube o baja</button></div>
     <div id="direccion-resultado"></div>
@@ -1015,27 +1022,102 @@ function medirDireccion(velas, ind, regla = "puntaje") {
   return res;
 }
 
-async function medirDireccionPar(par) {
+// Histórico largo: Binance da máximo 1000 velas por petición, así que se piden tandas
+// consecutivas (de 5 en 5, en paralelo) hasta cubrir el periodo, sin huecos ni repetidas.
+const PERIODO_LARGO = { "1m": 30 * 86400, "5m": 90 * 86400, "15m": 180 * 86400, "1h": 365 * 86400 };
+const PARTES_A_LA_VEZ = 5;
+const cacheHistorico = new Map();
+
+async function pedirTanda(par, seg, desdeMs) {
+  for (let intento = 0; intento < 2; intento++) {
+    for (const base of API_BINANCE) {
+      try {
+        const url = `${base}/api/v3/klines?symbol=${simbolo(par)}&interval=${INTERVALO_BINANCE[seg]}&startTime=${desdeMs}&limit=1000`;
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error(`respondió ${resp.status}`);
+        const datos = await resp.json();
+        if (!Array.isArray(datos)) throw new Error(datos.msg || "respuesta inesperada");
+        return datos.map(f => ({ t: Math.floor(f[0] / 1000), abre: +f[1], alto: +f[2], bajo: +f[3], cierra: +f[4], volumen: +f[5] }));
+      } catch (e) {
+        // Prueba con el siguiente dominio
+      }
+    }
+    await esperar(1000);
+  }
+  throw new Error("no se pudo conectar con Binance desde este navegador");
+}
+
+async function pedirDesde(par, seg, desdeSeg, avance) {
+  const paso = 1000 * seg * 1000;
+  const inicios = [];
+  for (let d = desdeSeg * 1000; d < Date.now(); d += paso) inicios.push(d);
+  const mapa = new Map();
+  for (let k = 0; k < inicios.length; k += PARTES_A_LA_VEZ) {
+    const lote = inicios.slice(k, k + PARTES_A_LA_VEZ);
+    const tandas = await Promise.all(lote.map(d => pedirTanda(par, seg, d)));
+    for (const tanda of tandas) for (const v of tanda) mapa.set(v.t, v);
+    if (avance) avance(Math.min(k + lote.length, inicios.length), inicios.length);
+  }
+  return [...mapa.values()].sort((a, b) => a.t - b.t);
+}
+
+// Velas del marco y del marco superior, cubriendo el mismo periodo largo.
+// El marco superior empieza 60 velas antes para que sus medias móviles ya tengan datos.
+async function datosLargos(par, tiempo, avance) {
+  const clave = `${par}|${tiempo}`;
+  const previa = cacheHistorico.get(clave);
+  if (previa && Date.now() - previa.hecho < 10 * 60 * 1000) return previa.datos;
+  const seg = TIEMPOS[tiempo];
+  const segH = TIEMPOS[MARCO_SUPERIOR[tiempo]];
+  const desde = Math.floor((Date.now() / 1000 - PERIODO_LARGO[tiempo]) / seg) * seg;
+  const desdeH = Math.floor((desde - 60 * segH) / segH) * segH;
+  const velas = cerradas(await pedirDesde(par, seg, desde, avance), seg);
+  const velasH = cerradas(await pedirDesde(par, segH, desdeH), segH);
+  const datos = { velas, velasH };
+  cacheHistorico.set(clave, { hecho: Date.now(), datos });
+  return datos;
+}
+
+async function datosCortos(par, tiempo) {
+  const seg = TIEMPOS[tiempo];
+  const velas = cerradas(await pedirVelas(par, seg, 1000), seg);
+  const velasH = await velasSuperiores(par, tiempo);
+  return { velas, velasH };
+}
+
+// Una fila por regla: acierto total y en cada mitad, con margen de error del 95%.
+// La primera mitad sirve para ver si el resultado es estable; la segunda es la más reciente.
+function filasDireccion(tiempo, velas, velasH) {
+  if (velas.length < 200) throw new Error(`pocas velas cerradas en ${tiempo}`);
+  const seg = TIEMPOS[tiempo];
+  const segH = TIEMPOS[MARCO_SUPERIOR[tiempo]];
+  const ind = indicadores(velas, alinearHTF(velas, velasH, tendenciaHTF(velasH), seg, segH), false);
+  const mitad = Math.floor(velas.length / 2);
+  const medida = res => {
+    const n = res.length;
+    if (!n) return { n: 0, pct: null, margen: null };
+    const p = res.filter(x => x.acerto).length / n;
+    return { n, pct: p * 100, margen: 1.96 * Math.sqrt((p * (1 - p)) / n) * 100 };
+  };
+  return ["puntaje", "tendencia"].map(regla => {
+    const res = medirDireccion(velas, ind, regla);
+    return {
+      tiempo, regla,
+      desde: velas[0].t, hasta: velas[velas.length - 1].t, velas: velas.length,
+      total: medida(res),
+      primera: medida(res.filter(x => x.i < mitad)),
+      segunda: medida(res.filter(x => x.i >= mitad)),
+    };
+  });
+}
+
+async function medirDireccionPar(par, largo, avance) {
   const filas = [];
   for (const tiempo of ["1m", "5m", "15m", "1h"]) {
-    const seg = TIEMPOS[tiempo];
-    const segH = TIEMPOS[MARCO_SUPERIOR[tiempo]];
-    const velas = cerradas(await pedirVelas(par, seg, 1000), seg);
-    const velasH = await velasSuperiores(par, tiempo);
-    const ind = indicadores(velas, alinearHTF(velas, velasH, tendenciaHTF(velasH), seg, segH), false);
-    const mitad = Math.floor(velas.length / 2);
-    const pct = arr => (arr.length ? (arr.filter(x => x.acerto).length / arr.length) * 100 : null);
-    for (const regla of ["puntaje", "tendencia"]) {
-      const res = medirDireccion(velas, ind, regla);
-      filas.push({
-        tiempo,
-        regla,
-        n: res.length,
-        total: pct(res),
-        primera: pct(res.filter(x => x.i < mitad)),
-        segunda: pct(res.filter(x => x.i >= mitad)),
-      });
-    }
+    const { velas, velasH } = largo
+      ? await datosLargos(par, tiempo, (h, t) => avance && avance(`${tiempo}: parte ${h} de ${t}`))
+      : await datosCortos(par, tiempo);
+    filas.push(...filasDireccion(tiempo, velas, velasH));
   }
   return filas;
 }
@@ -1047,13 +1129,19 @@ async function ejecutarMedirDireccion() {
   if (midiendoDir) return;
   midiendoDir = true;
   const par = estado.principal;
+  const largo = document.getElementById("historial-modo").value === "largo";
   const btn = document.getElementById("direccion-btn");
+  const cont = document.getElementById("direccion-resultado");
   btn.disabled = true;
-  document.getElementById("direccion-resultado").innerHTML = `<p class="muted">Midiendo… puede tardar unos segundos.</p>`;
+  cont.innerHTML = `<p class="muted" id="progreso-dir">Midiendo… ${largo ? "el historial largo tarda bastante más en el teléfono." : "puede tardar unos segundos."}</p>`;
+  const avance = texto => {
+    const p = document.getElementById("progreso-dir");
+    if (p) p.textContent = `Descargando ${texto}…`;
+  };
   try {
-    direccion = { par, filas: await medirDireccionPar(par) };
+    direccion = { par, largo, filas: await medirDireccionPar(par, largo, avance) };
   } catch (e) {
-    direccion = { par, error: e.message };
+    direccion = { par, largo, error: e.message };
   }
   midiendoDir = false;
   btn.disabled = false;
@@ -1064,15 +1152,27 @@ function pintarDireccion() {
   const cont = document.getElementById("direccion-resultado");
   if (!direccion) { cont.innerHTML = ""; return; }
   if (direccion.error) { cont.innerHTML = `<p class="error">No se pudo medir: ${esc(direccion.error)}.</p>`; return; }
-  const celda = v => (v == null ? "—" : `${fmtDec.format(v)}%`);
+  const pct = m => (m.n ? `${fmtDec.format(m.pct)}% <small>±${fmtDec.format(m.margen)}</small>` : "—");
+  const cumple = f => (f.primera.n && f.segunda.n && f.primera.pct > 55 && f.segunda.pct > 55 ? "Sí" : "No");
+  const fecha = s => new Date(s * 1000).toLocaleDateString("es", { timeZone: "America/Caracas", day: "numeric", month: "short", year: "numeric" });
   const filas = direccion.filas.map(f => `<tr>
-      <td>${esc(f.tiempo)}</td><td>${f.regla === "puntaje" ? "Puntaje" : "Tendencia"}</td><td>${f.n}</td><td>${celda(f.total)}</td><td>${celda(f.primera)}</td><td>${celda(f.segunda)}</td>
+      <td>${esc(f.tiempo)}</td><td>${f.regla === "puntaje" ? "Puntaje" : "Tendencia"}</td><td>${f.total.n}</td><td>${pct(f.total)}</td><td>${pct(f.primera)}</td><td>${pct(f.segunda)}</td><td>${cumple(f)}</td>
     </tr>`).join("");
-  cont.innerHTML = `<p class="muted">Par: ${esc(etiquetaPar(direccion.par))}. Compara la dirección con el siguiente periodo de cada marco. Puntaje usa las seis reglas. Tendencia sigue al precio frente a la EMA 50 y al marco de 1 hora, y no predice si no coinciden. Para ganar en "sube o baja" hace falta estar claramente por encima de 50%, y después pagar comisiones.</p>
+  const marcos = [...new Set(direccion.filas.map(f => f.tiempo))].map(t => {
+    const f = direccion.filas.find(x => x.tiempo === t);
+    return `${esc(t)}: ${fecha(f.desde)} a ${fecha(f.hasta)} (${f.velas.toLocaleString("es")} velas)`;
+  });
+  const cumplen = direccion.filas.filter(f => cumple(f) === "Sí").length;
+  const veredicto = cumplen
+    ? `${cumplen} fila(s) superan 55% en ambas mitades. Antes de creerlo hay que descontar comisiones y comprobar que el margen no cruce 50%.`
+    : "Ninguna regla supera 55% en ambas mitades. Según el criterio que acordamos, no hay señal que probar con comisiones en este periodo.";
+  cont.innerHTML = `<p class="muted">Par: ${esc(etiquetaPar(direccion.par))}. ${direccion.largo ? "Historial largo." : "Historial corto."} Cada fila compara la dirección del bot con el siguiente periodo de su marco. La segunda mitad es la más reciente. El ± es el margen de error del 95%: si el acierto menos el margen queda por debajo de 50%, no hay ventaja clara. Acierto antes de comisiones.</p>
+    <p class="muted">${marcos.join("<br>")}</p>
     <div class="tabla-wrap"><table class="tabla">
-      <thead><tr><th>Marco</th><th>Regla</th><th>Predicciones</th><th>Acierto</th><th>1.ª mitad</th><th>2.ª mitad</th></tr></thead>
+      <thead><tr><th>Marco</th><th>Regla</th><th>Predicciones</th><th>Acierto</th><th>1.ª mitad</th><th>2.ª mitad</th><th>Más de 55% en ambas</th></tr></thead>
       <tbody>${filas}</tbody>
-    </table></div>`;
+    </table></div>
+    <p class="muted">${veredicto}</p>`;
 }
 
 async function asegurarPrueba(par) {
@@ -1217,6 +1317,7 @@ function pintarGrafico() {
   info.textContent = `${etiquetaHora(v.t, r.tiempo)} · Apertura ${fmtPrecio(v.abre)} · Máx ${fmtPrecio(v.alto)} · Mín ${fmtPrecio(v.bajo)} · Cierre ${fmtPrecio(v.cierra)} · Vol ${fmtVol.format(v.volumen)} · ${fmtPct.format(cambio)}%`;
   const sg = r.d.senal ? `${r.d.senal} · puntaje ${r.d.puntaje > 0 ? "+" : ""}${r.d.puntaje}` : "sin datos";
   senalTxt.innerHTML = `Señal actual de ${esc(etiquetaPar(par))}: <strong>${esc(sg)}</strong> · marco ${esc(r.tiempo)}`;
+  pintarHistorico(par, r.tiempo);
 }
 
 function indiceDesde(e) {
@@ -1442,6 +1543,65 @@ function actualizarFlujo(par) {
   if (el) el.innerHTML = htmlFlujo(par);
 }
 
+// ----- Historial de la señal: cuántas veces acertó LONG y SHORT en las últimas 1000 velas -----
+// Acierto = el siguiente periodo del mismo marco fue en la dirección de la señal.
+const historicoSenal = {}; // "par|marco" -> { t, promesa }
+
+function medirSenales(velas, ind) {
+  const cuenta = { LONG: { n: 0, ok: 0 }, SHORT: { n: 0, ok: 0 } };
+  for (let i = 60; i < velas.length - 1; i++) {
+    const d = decidir(ind, i, 3);
+    if (d.senal !== "LONG" && d.senal !== "SHORT") continue;
+    const subio = velas[i + 1].cierra > velas[i].cierra;
+    const bajo = velas[i + 1].cierra < velas[i].cierra;
+    if (!subio && !bajo) continue;
+    cuenta[d.senal].n++;
+    if ((d.senal === "LONG") === subio) cuenta[d.senal].ok++;
+  }
+  return cuenta;
+}
+
+function cargarHistoricoSenal(par, tiempo) {
+  const clave = par + "|" + tiempo;
+  const previo = historicoSenal[clave];
+  if (previo && Date.now() - previo.t < 10 * 60 * 1000) return previo.promesa;
+  const promesa = (async () => {
+    const seg = TIEMPOS[tiempo];
+    const segH = TIEMPOS[MARCO_SUPERIOR[tiempo]];
+    const velas = cerradas(await pedirVelas(par, seg, 1000), seg);
+    const velasH = await velasSuperiores(par, tiempo);
+    const ind = indicadores(velas, alinearHTF(velas, velasH, tendenciaHTF(velasH), seg, segH), exigeTendencia(tiempo));
+    return medirSenales(velas, ind);
+  })();
+  historicoSenal[clave] = { t: Date.now(), promesa };
+  promesa.catch(() => { delete historicoSenal[clave]; });
+  return promesa;
+}
+
+function pintarHistorico(par, tiempo) {
+  const el = document.getElementById("historico-senal");
+  if (!el) return;
+  el.textContent = "Calculando historial…";
+  cargarHistoricoSenal(par, tiempo).then(c => {
+    const act = document.getElementById("historico-senal");
+    const r = resultados[par];
+    if (!act || estado.principal !== par || !r || r.tiempo !== tiempo) return;
+    const f = x => (x.n ? `${fmtDec.format((x.ok / x.n) * 100)}% de ${x.n}` : "sin casos");
+    act.textContent = `Historial en ${tiempo} (últimas 1000 velas): cuando dio LONG acertó ${f(c.LONG)}; cuando dio SHORT acertó ${f(c.SHORT)}. Una moneda al aire acierta 50%.`;
+  }).catch(() => {
+    const act = document.getElementById("historico-senal");
+    if (act) act.textContent = "No se pudo calcular el historial.";
+  });
+}
+
+// ----- Tiempo que falta para que cierre la vela actual (se actualiza cada segundo) -----
+function textoCierre(tiempo) {
+  const seg = TIEMPOS[tiempo];
+  const falta = seg - ((Date.now() / 1000) % seg);
+  const m = Math.floor(falta / 60), s = Math.floor(falta % 60);
+  return `Cierra la vela de ${tiempo} en ${m}:${String(s).padStart(2, "0")}`;
+}
+
 function programar() {
   clearInterval(temporizador);
   if (estado.auto > 0) temporizador = setInterval(refrescar, estado.auto * 1000);
@@ -1573,6 +1733,11 @@ pintarRegistro();
 programar();
 conectarTiempoReal();
 setInterval(() => estado.pares.forEach(par => actualizarFlujo(par)), 5000);
+setInterval(() => {
+  const el = document.getElementById("cierre-vela");
+  const r = resultados[estado.principal];
+  if (el && r && r.ok) el.textContent = textoCierre(r.tiempo);
+}, 1000);
 refrescar();
 </script>
 </body>
