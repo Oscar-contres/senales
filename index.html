@@ -1653,8 +1653,9 @@ const historicoSenal = {}; // "par|marco" -> { t, promesa }
 
 // Cuenta las señales LONG y SHORT, en total y en cada mitad, y guarda la volatilidad de cada una.
 // Los cortes de volatilidad salen de la primera mitad y se aplican a las dos.
-function medirSenales(velas, ind) {
+function medirSenales(velas, ind, seg) {
   const mitad = Math.floor(velas.length / 2);
+  const ventana = Math.max(3, Math.round(10800 / seg)); // últimas 3 horas, según el marco
   const vol = i => ind.atr[i] / velas[i].cierra;
   const primera = [];
   for (let i = 60; i < mitad; i++) if (ind.atr[i] != null) primera.push(vol(i));
@@ -1677,7 +1678,19 @@ function medirSenales(velas, ind) {
     c.n++; c["n" + parte]++;
     if (acierto) { c.ok++; c["ok" + parte]++; }
     const v = vol(i);
-    filas.push({ parte, acierto, banda: v < cortes[0] ? 0 : v < cortes[1] ? 1 : 2 });
+    // ¿El precio estaba cerca del mínimo (LONG) o del máximo (SHORT) de las últimas 3 horas? A menos de 0,5 ATR.
+    let hi = -Infinity, lo = Infinity;
+    for (let j = Math.max(0, i - ventana + 1); j <= i; j++) {
+      if (velas[j].alto > hi) hi = velas[j].alto;
+      if (velas[j].bajo < lo) lo = velas[j].bajo;
+    }
+    const a = ind.atr[i] ?? 0;
+    const cerca = d.senal === "LONG" ? velas[i].cierra - lo <= 0.5 * a : hi - velas[i].cierra <= 0.5 * a;
+    filas.push({
+      parte, acierto, senal: d.senal, cerca,
+      banda: v < cortes[0] ? 0 : v < cortes[1] ? 1 : 2,
+      puntaje: Math.abs(d.puntaje),
+    });
   }
   return { cuenta, filas, cortes };
 }
@@ -1707,20 +1720,19 @@ function veredicto(c, comisionPct) {
   return pasa ? "APROBADA" : "DESCARTADA";
 }
 
-// Acierto de las señales según la volatilidad (ATR relativo al precio), por mitad.
-function tablaVolatilidad(filas) {
-  const nombres = ["Plano (ATR bajo)", "Medio", "Agitado (ATR alto)"];
-  const celda = (grupo, parte) => {
-    const f = grupo.filter(x => x.parte === parte);
-    if (!f.length) return "—";
-    const ok = f.filter(x => x.acierto).length;
-    return `${fmtDec.format((ok / f.length) * 100)}% <small>(${f.length})</small>`;
+// Acierto de cada grupo de señales, en cada mitad. grupos = [[nombre, condición], ...]
+function tablaGrupos(filas, grupos) {
+  const celda = (f, parte) => {
+    const g = f.filter(x => x.parte === parte);
+    if (!g.length) return "—";
+    const ok = g.filter(x => x.acierto).length;
+    return `${fmtDec.format((ok / g.length) * 100)}% <small>(${g.length})</small>`;
   };
-  const filasHTML = nombres.map((nombre, b) => {
-    const grupo = filas.filter(x => x.banda === b);
-    return `<tr><td>${nombre}</td><td>${celda(grupo, "1")}</td><td>${celda(grupo, "2")}</td></tr>`;
+  const filasHTML = grupos.map(([nombre, cond]) => {
+    const f = filas.filter(cond);
+    return `<tr><td>${nombre}</td><td>${celda(f, "1")}</td><td>${celda(f, "2")}</td></tr>`;
   }).join("");
-  return `<div class="tabla-wrap"><table class="tabla"><thead><tr><th>Volatilidad</th><th>1.ª mitad</th><th>2.ª mitad</th></tr></thead><tbody>${filasHTML}</tbody></table></div>`;
+  return `<div class="tabla-wrap"><table class="tabla"><thead><tr><th></th><th>1.ª mitad</th><th>2.ª mitad</th></tr></thead><tbody>${filasHTML}</tbody></table></div>`;
 }
 
 // Largo: mismo periodo que la prueba de dirección (comparte datos). Corto: últimas 1000 velas.
@@ -1738,7 +1750,7 @@ function cargarHistoricoSenal(par, tiempo, modo) {
   if (previo && Date.now() - previo.t < 10 * 60 * 1000) return previo.promesa;
   const promesa = (async () => {
     const ind = await indicadoresParaSenal(par, tiempo, modo);
-    return medirSenales(ind.velas, ind);
+    return medirSenales(ind.velas, ind, TIEMPOS[tiempo]);
   })();
   historicoSenal[clave] = { t: Date.now(), promesa };
   promesa.catch(() => { delete historicoSenal[clave]; });
@@ -1775,7 +1787,28 @@ function pintarHistorico(par, tiempo) {
     }
     const vol = document.getElementById("volatilidad-senal");
     if (vol) {
-      vol.innerHTML = `<p class="muted">Prueba del mercado plano: las señales se dividen por volatilidad (ATR relativo al precio). "Plano" es el tercio con menos movimiento en la primera mitad (ATR menor a ${fmtFino.format(c.cortes[0] * 100)}%). Un filtro solo tendría sentido si el grupo plano acierta más en las dos mitades.</p>${tablaVolatilidad(c.filas)}`;
+      vol.innerHTML = `
+        <p class="muted">Pruebas de las señales del historial, en las dos mitades. No cambian ninguna señal: solo muestran el acierto de cada grupo. En 5 m y 15 m ya se ignoran las señales contra la tendencia de 1 hora.</p>
+        <p class="muted"><strong>Volatilidad.</strong> "Plano" es el tercio con menos movimiento en la primera mitad (ATR menor a ${fmtFino.format(c.cortes[0] * 100)}% del precio). Un filtro solo tendría sentido si el grupo plano acierta más en las dos mitades.</p>
+        ${tablaGrupos(c.filas, [
+          ["Plano (ATR bajo)", x => x.banda === 0],
+          ["Medio", x => x.banda === 1],
+          ["Agitado (ATR alto)", x => x.banda === 2],
+        ])}
+        <p class="muted"><strong>Zona.</strong> "Cerca" es a menos de 0,5 ATR del mínimo (LONG) o del máximo (SHORT) de las últimas 3 horas.</p>
+        ${tablaGrupos(c.filas, [
+          ["LONG cerca del mínimo", x => x.senal === "LONG" && x.cerca],
+          ["LONG lejos del mínimo", x => x.senal === "LONG" && !x.cerca],
+          ["SHORT cerca del máximo", x => x.senal === "SHORT" && x.cerca],
+          ["SHORT lejos del máximo", x => x.senal === "SHORT" && !x.cerca],
+        ])}
+        <p class="muted"><strong>Puntaje.</strong> Cuántas de las seis reglas coinciden. Con más puntaje, ¿acierta más?</p>
+        ${tablaGrupos(c.filas, [
+          ["Puntaje 3", x => x.puntaje === 3],
+          ["Puntaje 4", x => x.puntaje === 4],
+          ["Puntaje 5", x => x.puntaje === 5],
+          ["Puntaje 6", x => x.puntaje >= 6],
+        ])}`;
     }
   }).catch(() => {
     const act = document.getElementById("historico-senal");
