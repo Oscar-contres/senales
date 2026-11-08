@@ -349,6 +349,7 @@ svg.grafica { display: block; width: 100%; max-width: 100%; height: auto; touch-
       <p id="prob-senal" class="prob-senal"></p>
       <p id="cierre-vela" class="muted"></p>
       <p id="historico-senal" class="muted"></p>
+      <div id="volatilidad-senal"></div>
     </div>
     <p id="info-vela" aria-live="off"></p>
     <div class="grafico-wrap" id="grafico-wrap"></div>
@@ -1650,22 +1651,77 @@ function actualizarFlujo(par) {
 // Acierto = el siguiente periodo del mismo marco fue en la dirección de la señal.
 const historicoSenal = {}; // "par|marco" -> { t, promesa }
 
+// Cuenta las señales LONG y SHORT, en total y en cada mitad, y guarda la volatilidad de cada una.
+// Los cortes de volatilidad salen de la primera mitad y se aplican a las dos.
 function medirSenales(velas, ind) {
-  const cuenta = { LONG: { n: 0, ok: 0 }, SHORT: { n: 0, ok: 0 } };
+  const mitad = Math.floor(velas.length / 2);
+  const vol = i => ind.atr[i] / velas[i].cierra;
+  const primera = [];
+  for (let i = 60; i < mitad; i++) if (ind.atr[i] != null) primera.push(vol(i));
+  primera.sort((a, b) => a - b);
+  const cortes = primera.length ? [primera[Math.floor(primera.length / 3)], primera[Math.floor((2 * primera.length) / 3)]] : [0, 0];
+  const cuenta = {
+    LONG: { n: 0, ok: 0, n1: 0, ok1: 0, n2: 0, ok2: 0 },
+    SHORT: { n: 0, ok: 0, n1: 0, ok1: 0, n2: 0, ok2: 0 },
+  };
+  const filas = [];
   for (let i = 60; i < velas.length - 1; i++) {
     const d = decidir(ind, i, 3);
     if (d.senal !== "LONG" && d.senal !== "SHORT") continue;
     const subio = velas[i + 1].cierra > velas[i].cierra;
     const bajo = velas[i + 1].cierra < velas[i].cierra;
     if (!subio && !bajo) continue;
-    cuenta[d.senal].n++;
-    if ((d.senal === "LONG") === subio) cuenta[d.senal].ok++;
+    const acierto = (d.senal === "LONG") === subio;
+    const parte = i < mitad ? "1" : "2";
+    const c = cuenta[d.senal];
+    c.n++; c["n" + parte]++;
+    if (acierto) { c.ok++; c["ok" + parte]++; }
+    const v = vol(i);
+    filas.push({ parte, acierto, banda: v < cortes[0] ? 0 : v < cortes[1] ? 1 : 2 });
   }
-  return cuenta;
+  return { cuenta, filas, cortes };
 }
 
 // Porcentaje de acierto con su margen de error del 95%. Null si no hay casos.
 const medidaSenal = x => (x.n ? { pct: (x.ok / x.n) * 100, margen: 1.96 * Math.sqrt(((x.ok / x.n) * (1 - x.ok / x.n)) / x.n) * 100, n: x.n } : null);
+
+// Valor esperado de una operación de "sube o baja", con pago de 80% y comisión por lado.
+// Fórmula del código de referencia. Si tu plataforma paga distinto, cambia PAGO_BINARIO.
+const PAGO_BINARIO = 1.80;
+const MIN_CASOS = 800; // casos mínimos por mitad para aprobar una regla
+const fmtFino = new Intl.NumberFormat("es", { maximumFractionDigits: 3 });
+
+function valorEsperado(acierto, comisionPct) {
+  const cuota = comisionPct / 100;
+  const ganaNeta = (PAGO_BINARIO - 1) - 2 * cuota;
+  const pierdeNeta = 1 + 2 * cuota;
+  return {
+    ev: acierto * ganaNeta - (1 - acierto) * pierdeNeta,
+    equilibrio: pierdeNeta / (ganaNeta + pierdeNeta),
+  };
+}
+
+// APROBADA solo si el valor esperado es positivo en las dos mitades, con casos suficientes.
+function veredicto(c, comisionPct) {
+  const pasa = [["n1", "ok1"], ["n2", "ok2"]].every(([n, ok]) => c[n] >= MIN_CASOS && valorEsperado(c[ok] / c[n], comisionPct).ev > 0);
+  return pasa ? "APROBADA" : "DESCARTADA";
+}
+
+// Acierto de las señales según la volatilidad (ATR relativo al precio), por mitad.
+function tablaVolatilidad(filas) {
+  const nombres = ["Plano (ATR bajo)", "Medio", "Agitado (ATR alto)"];
+  const celda = (grupo, parte) => {
+    const f = grupo.filter(x => x.parte === parte);
+    if (!f.length) return "—";
+    const ok = f.filter(x => x.acierto).length;
+    return `${fmtDec.format((ok / f.length) * 100)}% <small>(${f.length})</small>`;
+  };
+  const filasHTML = nombres.map((nombre, b) => {
+    const grupo = filas.filter(x => x.banda === b);
+    return `<tr><td>${nombre}</td><td>${celda(grupo, "1")}</td><td>${celda(grupo, "2")}</td></tr>`;
+  }).join("");
+  return `<div class="tabla-wrap"><table class="tabla"><thead><tr><th>Volatilidad</th><th>1.ª mitad</th><th>2.ª mitad</th></tr></thead><tbody>${filasHTML}</tbody></table></div>`;
+}
 
 // Largo: mismo periodo que la prueba de dirección (comparte datos). Corto: últimas 1000 velas.
 // Los indicadores llevan el filtro de tendencia de 1 hora, igual que el gráfico.
@@ -1702,16 +1758,24 @@ function pintarHistorico(par, tiempo) {
     const pr = document.getElementById("prob-senal");
     const r = resultados[par];
     if (!act || estado.principal !== par || !r || r.tiempo !== tiempo) return;
-    const L = medidaSenal(c.LONG), S = medidaSenal(c.SHORT);
+    const cu = c.cuenta;
+    const L = medidaSenal(cu.LONG), S = medidaSenal(cu.SHORT);
     const f = m => (m ? `${fmtDec.format(m.pct)}% ±${fmtDec.format(m.margen)} (de ${m.n})` : "sin casos");
     const periodo = modo === "largo" ? "historial largo" : "últimas 1000 velas";
     act.textContent = `Historial en ${tiempo} (${periodo}): cuando dio LONG acertó ${f(L)}; cuando dio SHORT acertó ${f(S)}. Una moneda al aire acierta 50%.`;
     if (pr) {
       const d = r.d.senal;
       const m = d === "LONG" ? L : d === "SHORT" ? S : null;
-      pr.innerHTML = m
-        ? `Probabilidad histórica de acierto para ${d}: <strong>${fmtDec.format(m.pct)}%</strong> ±${fmtDec.format(m.margen)} (${m.n} casos). Es frecuencia pasada, no una garantía. Cerca de 50% significa que la señal no aporta ventaja.`
-        : "Sin señal LONG ni SHORT ahora: no hay probabilidad que mostrar.";
+      if (m) {
+        const e = valorEsperado(m.pct / 100, estado.comision);
+        pr.innerHTML = `Probabilidad histórica de acierto para ${d}: <strong>${fmtDec.format(m.pct)}%</strong> ±${fmtDec.format(m.margen)} (${m.n} casos). Valor esperado por operación con pago de 80% y comisión de ${fmtDec.format(estado.comision)}%: <strong>${fmtDec.format(e.ev * 100)}%</strong>. Punto de equilibrio: ${fmtDec.format(e.equilibrio * 100)}%. Veredicto: <strong>${veredicto(cu[d], estado.comision)}</strong> (hace falta más del punto de equilibrio en las dos mitades, con al menos ${MIN_CASOS} casos cada una). Es frecuencia pasada, no una garantía.`;
+      } else {
+        pr.innerHTML = "Sin señal LONG ni SHORT ahora: no hay probabilidad que mostrar.";
+      }
+    }
+    const vol = document.getElementById("volatilidad-senal");
+    if (vol) {
+      vol.innerHTML = `<p class="muted">Prueba del mercado plano: las señales se dividen por volatilidad (ATR relativo al precio). "Plano" es el tercio con menos movimiento en la primera mitad (ATR menor a ${fmtFino.format(c.cortes[0] * 100)}%). Un filtro solo tendría sentido si el grupo plano acierta más en las dos mitades.</p>${tablaVolatilidad(c.filas)}`;
     }
   }).catch(() => {
     const act = document.getElementById("historico-senal");
