@@ -144,6 +144,8 @@ button:focus-visible, select:focus-visible { outline: 2px solid var(--accent); o
 .pnl-cifras { margin: 6px 0; font-size: 14px; color: var(--ink); }
 .pnl-grafica { display: block; width: 100%; max-width: 420px; height: auto; margin: 4px 0; }
 .pnl-cero { stroke: var(--line); stroke-dasharray: 3 3; }
+.check { display: flex; align-items: center; gap: 8px; min-height: 36px; font-size: 14px; color: var(--ink); }
+.check input { width: 18px; height: 18px; margin: 0; flex: 0 0 auto; }
 #info-vela { margin: 0; font: 400 12px/1.5 "IBM Plex Mono", ui-monospace, monospace; color: var(--muted); font-variant-numeric: tabular-nums; min-height: 1.5em; }
 .grafico-wrap { width: 100%; min-width: 0; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); padding: 4px 2px 0; overflow: hidden; }
 .card svg.grafica { border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
@@ -320,12 +322,11 @@ svg.grafica { display: block; width: 100%; max-width: 100%; height: auto; touch-
         </div>
       </div>
       <div class="grupo">
-        <label class="etiqueta" for="filtro-volumen">Filtro de volumen</label>
-        <select id="filtro-volumen" style="width:100%;max-width:100%">
-          <option value="no">Sin filtro (como hasta ahora)</option>
-          <option value="si">Solo con volumen de 3 veces o más</option>
-        </select>
-        <p class="muted">Con el filtro, no hay LONG ni SHORT si la vela tiene menos de 3 veces el volumen promedio de las 20 anteriores. Cambia la señal actual, el gráfico y la simulación.</p>
+        <span class="etiqueta">Filtros de la señal (apagados por defecto)</span>
+        <label class="check"><input type="checkbox" id="f-volumen"> Solo con volumen de 3 veces o más</label>
+        <label class="check"><input type="checkbox" id="f-agotamiento"> No entrar tras 3 velas seguidas en la misma dirección</label>
+        <label class="check"><input type="checkbox" id="f-mechas"> Anular si la vela anterior tiene mecha larga</label>
+        <p class="muted">Cada filtro solo quita señales. Cambian la señal actual, el gráfico y la simulación.</p>
       </div>
     </div>
     <div class="grupo">
@@ -554,8 +555,32 @@ function indicadores(velas, htf, exigeTend = false) {
   };
 }
 
+// Filtros opcionales: apagados por defecto. Solo quitan señales; no cambian el puntaje.
+const SIN_FILTROS = { volumen: false, agotamiento: false, mechas: false };
+
+// Tres velas seguidas en la dirección de la señal (incluida la actual), todas con cuerpo de al menos 0,5 ATR.
+function agotado(ind, i, senal) {
+  const a = ind.atr[i];
+  if (i < 2 || a == null) return false;
+  return [i - 2, i - 1, i].every(j => {
+    const v = ind.velas[j];
+    const cuerpo = Math.abs(v.cierra - v.abre);
+    return cuerpo >= 0.5 * a && (senal === "LONG" ? v.cierra > v.abre : v.cierra < v.abre);
+  });
+}
+
+// Mecha de arriba o de abajo mayor que la mitad del cuerpo de la vela anterior: indecisión.
+function mechaLarga(ind, i) {
+  if (i < 1) return false;
+  const v = ind.velas[i - 1];
+  const cuerpo = Math.abs(v.cierra - v.abre);
+  const arriba = v.alto - Math.max(v.abre, v.cierra);
+  const abajo = Math.min(v.abre, v.cierra) - v.bajo;
+  return Math.max(arriba, abajo) > 0.5 * cuerpo;
+}
+
 // Puntaje de -6 a +6 con seis reglas de ±1. LONG con 3 o más, SHORT con -3 o menos.
-function decidir(ind, i, umbral = 3, filtroVol = false) {
+function decidir(ind, i, umbral = 3, filtros = SIN_FILTROS) {
   const v = ind.velas[i];
   const c = v.cierra;
   const e9 = ind.e9[i], e21 = ind.e21[i], e50 = ind.e50[i], r = ind.rsi[i];
@@ -605,10 +630,16 @@ function decidir(ind, i, umbral = 3, filtroVol = false) {
     reglas.push({ texto: "va contra la tendencia de 1 hora: esperar", pts: 0 });
     senal = "ESPERAR";
   }
-  // Filtro de volumen (opcional): solo da señal si la vela tiene al menos 3 veces el volumen promedio.
-  if (filtroVol && senal !== "ESPERAR" && v.volumen < 3 * vm) {
-    reglas.push({ texto: "volumen menor a 3 veces el promedio: esperar", pts: 0 });
-    senal = "ESPERAR";
+  // Filtros opcionales: si se cumple uno, se anula la señal.
+  if (senal !== "ESPERAR") {
+    let motivo = null;
+    if (filtros.volumen && v.volumen < 3 * vm) motivo = "volumen menor a 3 veces el promedio";
+    else if (filtros.agotamiento && agotado(ind, i, senal)) motivo = "3 velas seguidas en la misma dirección: llega tarde";
+    else if (filtros.mechas && mechaLarga(ind, i)) motivo = "mecha larga en la vela anterior: indecisión";
+    if (motivo) {
+      reglas.push({ texto: motivo + ": esperar", pts: 0 });
+      senal = "ESPERAR";
+    }
   }
   let niveles = null;
   if (senal !== "ESPERAR") {
@@ -768,7 +799,7 @@ function graficoPrincipalSVG(velas, ind, d, tiempo, W, hover, n = 120) {
   // Señales pasadas
   idx.forEach((i, k) => {
     if (i < 60) return;
-    const sg = decidir(ind, i, 3, estado.filtroVolumen).senal;
+    const sg = decidir(ind, i, 3, estado.filtros).senal;
     if (sg !== "LONG" && sg !== "SHORT") return;
     const x = X(k), v = velas[i];
     if (sg === "LONG") {
@@ -964,7 +995,7 @@ const estado = {
   horizonte: 5,
   comision: 0.6,
   tamano: "normal",
-  filtroVolumen: false,
+  filtros: { volumen: false, agotamiento: false, mechas: false },
   ver: {},
 };
 const resultados = {};
@@ -1037,7 +1068,7 @@ async function cargarPar(par, tiempo) {
   const vistaVelas = crudas;
   const vistaInd = indicadores(vistaVelas, alinearHTF(vistaVelas, velasH, htf, seg, segH), exigeTendencia(tiempo));
   const precio = crudas[crudas.length - 1].cierra;
-  return { velas, ind, d: decidir(ind, velas.length - 1, 3, estado.filtroVolumen), precio, vistaVelas, vistaInd };
+  return { velas, ind, d: decidir(ind, velas.length - 1, 3, estado.filtros), precio, vistaVelas, vistaInd };
 }
 
 async function cargarPrueba(par, tiempo, horizonte, comision) {
@@ -1496,7 +1527,9 @@ function pintarControles() {
   document.getElementById("auto").value = String(estado.auto);
   document.getElementById("horizonte").value = String(estado.horizonte);
   document.getElementById("comision").value = String(estado.comision);
-  document.getElementById("filtro-volumen").value = estado.filtroVolumen ? "si" : "no";
+  document.getElementById("f-volumen").checked = estado.filtros.volumen;
+  document.getElementById("f-agotamiento").checked = estado.filtros.agotamiento;
+  document.getElementById("f-mechas").checked = estado.filtros.mechas;
 }
 
 function leerPrefs() {
@@ -1514,7 +1547,11 @@ function leerPrefs() {
     if ([3, 5, 10].includes(x.horizonte)) estado.horizonte = x.horizonte;
     if ([0.1, 0.4, 0.6, 1].includes(x.comision)) estado.comision = x.comision;
     if (["compacto", "normal", "grande"].includes(x.tamano)) estado.tamano = x.tamano;
-    if ([true, false].includes(x.filtroVolumen)) estado.filtroVolumen = x.filtroVolumen;
+    if (x.filtros && typeof x.filtros === "object") {
+      for (const k of ["volumen", "agotamiento", "mechas"]) {
+        if (typeof x.filtros[k] === "boolean") estado.filtros[k] = x.filtros[k];
+      }
+    }
   } catch (e) {
     // Sin almacenamiento disponible: se usan los valores por defecto.
   }
@@ -1530,7 +1567,7 @@ function guardarPrefs() {
       horizonte: estado.horizonte,
       comision: estado.comision,
       tamano: estado.tamano,
-      filtroVolumen: estado.filtroVolumen,
+      filtros: estado.filtros,
     }));
   } catch (e) {
     // Si no se puede guardar, la página sigue funcionando.
@@ -1716,6 +1753,8 @@ function medirSenales(velas, ind, seg) {
       banda: v < cortes[0] ? 0 : v < cortes[1] ? 1 : 2,
       puntaje: Math.abs(d.puntaje),
       vr: ind.volMedia[i] ? velas[i].volumen / ind.volMedia[i] : 0,
+      agot: agotado(ind, i, d.senal),
+      mecha: mechaLarga(ind, i),
     });
   }
   return { cuenta, filas, cortes };
@@ -1842,6 +1881,16 @@ function pintarHistorico(par, tiempo) {
           ["Menos de 1,5 veces", x => x.vr < 1.5],
           ["De 1,5 a 3 veces", x => x.vr >= 1.5 && x.vr < 3],
           ["3 veces o más", x => x.vr >= 3],
+        ])}
+        <p class="muted"><strong>Agotamiento.</strong> Tres velas seguidas en la dirección de la señal, con cuerpo de al menos 0,5 ATR. Si la fila "bloqueada" acierta menos en las dos mitades, el filtro ayuda.</p>
+        ${tablaGrupos(c.filas, [
+          ["Sin 3 velas seguidas", x => !x.agot],
+          ["Con 3 velas seguidas (bloqueada)", x => x.agot],
+        ])}
+        <p class="muted"><strong>Mecha.</strong> La vela anterior tiene una mecha mayor que la mitad de su cuerpo (indecisión). Mismo criterio: la fila "bloqueada" debe acertar menos en las dos mitades.</p>
+        ${tablaGrupos(c.filas, [
+          ["Sin mecha larga", x => !x.mecha],
+          ["Con mecha larga (bloqueada)", x => x.mecha],
         ])}`;
     }
   }).catch(() => {
@@ -1869,8 +1918,13 @@ function pintarPnL() {
   const cuota = estado.comision / 100;
   const gana = monto * ((PAGO_BINARIO - 1) - 2 * cuota);
   const pierde = monto * (1 + 2 * cuota);
-  const filtro = estado.filtroVolumen ? "con filtro de volumen de 3 veces" : "sin filtro de volumen";
-  const ops = ultimaMedicion.c.filas.filter(f => !estado.filtroVolumen || f.vr >= 3).slice(-100);
+  const activos = [];
+  if (estado.filtros.volumen) activos.push("volumen de 3 veces");
+  if (estado.filtros.agotamiento) activos.push("sin entrar tras 3 velas seguidas");
+  if (estado.filtros.mechas) activos.push("sin mecha larga");
+  const filtro = activos.length ? "con filtros: " + activos.join(", ") : "sin filtros";
+  const pasa = f => (!estado.filtros.volumen || f.vr >= 3) && (!estado.filtros.agotamiento || !f.agot) && (!estado.filtros.mechas || !f.mecha);
+  const ops = ultimaMedicion.c.filas.filter(pasa).slice(-100);
   if (!ops.length) {
     cont.innerHTML = `<p class="muted">No hay señales para simular (${filtro}).</p>`;
     return;
@@ -1904,7 +1958,7 @@ function pintarPnL() {
 function recalcularSenales() {
   for (const par of Object.keys(resultados)) {
     const r = resultados[par];
-    if (r && r.ok) r.d = decidir(r.ind, r.velas.length - 1, 3, estado.filtroVolumen);
+    if (r && r.ok) r.d = decidir(r.ind, r.velas.length - 1, 3, estado.filtros);
   }
   pintarTodas();
   pintarGrafico();
@@ -2107,11 +2161,13 @@ document.getElementById("comision").addEventListener("change", e => {
   pintarPnL();
 });
 
-document.getElementById("filtro-volumen").addEventListener("change", e => {
-  estado.filtroVolumen = e.target.value === "si";
-  guardarPrefs();
-  recalcularSenales();
-});
+for (const [id, clave] of [["f-volumen", "volumen"], ["f-agotamiento", "agotamiento"], ["f-mechas", "mechas"]]) {
+  document.getElementById(id).addEventListener("change", e => {
+    estado.filtros[clave] = e.target.checked;
+    guardarPrefs();
+    recalcularSenales();
+  });
+}
 
 document.getElementById("pnl-monto").addEventListener("input", pintarPnL);
 
