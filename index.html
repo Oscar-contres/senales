@@ -1028,9 +1028,17 @@ async function pedirVelas(par, seg, cantidad) {
   for (const base of API_BINANCE) {
     try {
       const url = `${base}/api/v3/klines?symbol=${simbolo(par)}&interval=${INTERVALO_BINANCE[seg]}&limit=${Math.min(cantidad, 1000)}`;
-      const resp = await fetch(url);
-      if (!resp.ok) throw new Error(`respondió ${resp.status}`);
-      const datos = await resp.json();
+      // Si Binance no responde en 10 segundos, se pasa al otro dominio en vez de quedarse esperando.
+      const ctl = new AbortController();
+      const corte = setTimeout(() => ctl.abort(), 10000);
+      let datos;
+      try {
+        const resp = await fetch(url, { signal: ctl.signal });
+        if (!resp.ok) throw new Error(`respondió ${resp.status}`);
+        datos = await resp.json();
+      } finally {
+        clearTimeout(corte);
+      }
       if (!Array.isArray(datos)) throw new Error(datos.msg || "respuesta inesperada");
       return datos
         .map(f => ({ t: Math.floor(f[0] / 1000), abre: +f[1], alto: +f[2], bajo: +f[3], cierra: +f[4], volumen: +f[5] }))
@@ -2046,22 +2054,32 @@ async function refrescar() {
   const txt = document.getElementById("estado");
   btn.disabled = true;
   let fallos = 0;
-  for (let k = 0; k < pares.length; k++) {
-    txt.textContent = `Consultando ${pares[k].replace("-USD", "")} en marco ${tiempo} (${k + 1} de ${pares.length})…`;
-    try {
-      resultados[pares[k]] = { ok: true, tiempo, ...(await cargarPar(pares[k], tiempo)) };
-      registrar(pares[k], resultados[pares[k]]);
-    } catch (e) {
-      fallos++;
-      resultados[pares[k]] = { ok: false, tiempo, error: e.message };
+  try {
+    for (let k = 0; k < pares.length; k++) {
+      txt.textContent = `Consultando ${pares[k].replace("-USD", "")} en marco ${tiempo} (${k + 1} de ${pares.length})…`;
+      try {
+        resultados[pares[k]] = { ok: true, tiempo, ...(await cargarPar(pares[k], tiempo)) };
+        registrar(pares[k], resultados[pares[k]]);
+      } catch (e) {
+        fallos++;
+        resultados[pares[k]] = { ok: false, tiempo, error: e.message };
+      }
+      // Si el dibujo falla, la actualización sigue y no se queda bloqueada.
+      try {
+        pintarTodas();
+        pintarGrafico();
+        pintarRegistro();
+      } catch (e) {
+        fallos++;
+        console.error("Error al dibujar:", e);
+      }
     }
-    pintarTodas();
-    pintarGrafico();
-    pintarRegistro();
+    txt.textContent = `Actualizado a las ${horaCaracas(Date.now())} (hora Venezuela)` + (fallos ? `. ${fallos} con error.` : ".");
+  } finally {
+    // Pase lo que pase, la página vuelve a poder actualizarse.
+    btn.disabled = false;
+    cargando = false;
   }
-  txt.textContent = `Actualizado a las ${horaCaracas(Date.now())} (hora Venezuela)` + (fallos ? `. ${fallos} con error.` : ".");
-  btn.disabled = false;
-  cargando = false;
   if (pendiente) { pendiente = false; refrescar(); }
 }
 
