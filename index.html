@@ -595,7 +595,7 @@ function mechaLarga(ind, i) {
 }
 
 // Puntaje de -6 a +6 con seis reglas de ±1. LONG con 3 o más, SHORT con -3 o menos.
-function decidir(ind, i, umbral = 3, filtros = SIN_FILTROS) {
+function decidir(ind, i, umbral = 3, filtros = SIN_FILTROS, marco = null) {
   const v = ind.velas[i];
   const c = v.cierra;
   const e9 = ind.e9[i], e21 = ind.e21[i], e50 = ind.e50[i], r = ind.rsi[i];
@@ -655,7 +655,7 @@ function decidir(ind, i, umbral = 3, filtros = SIN_FILTROS) {
     if (filtros.confluencia && favor < 5) bloqueo = "Poca confluencia: menos de 5 de 6 reglas de acuerdo";
     else if (filtros.volumen && v.volumen < 3 * vm) bloqueo = "Sin volumen óptimo: menos de 3 veces el promedio";
     else if (filtros.agotamiento && agotado(ind, i, senal)) bloqueo = "Llega tarde: 3 velas seguidas en la misma dirección";
-    else if (filtros.mechas && mechaLarga(ind, i)) bloqueo = "Indecisión: mecha larga en la vela anterior";
+    else if (filtros.mechas && marco !== "1h" && mechaLarga(ind, i)) bloqueo = "Indecisión: mecha larga en la vela anterior";
     if (bloqueo) {
       reglas.push({ texto: bloqueo + ": esperar", pts: 0 });
       senal = "ESPERAR";
@@ -667,7 +667,9 @@ function decidir(ind, i, umbral = 3, filtros = SIN_FILTROS) {
     const dir = senal === "LONG" ? 1 : -1;
     niveles = { entrada: c, stop: c - dir * 1.5 * a, objetivo: c + dir * 3 * a, atr: a };
   }
-  return { senal, puntaje, reglas, niveles, motivo };
+  // En 1 h la mecha larga no bloquea la señal: solo muestra un aviso.
+  const aviso = marco === "1h" && mechaLarga(ind, i) ? "Aviso: vela anterior de 1 h con mecha larga (indecisión)" : null;
+  return { senal, puntaje, reglas, niveles, motivo, aviso };
 }
 
 // Sigue una señal en las velas posteriores: primero stop u objetivo, si no, cierre al horizonte.
@@ -820,7 +822,7 @@ function graficoPrincipalSVG(velas, ind, d, tiempo, W, hover, n = 120) {
   // Señales pasadas
   idx.forEach((i, k) => {
     if (i < 60) return;
-    const sg = decidir(ind, i, 3, estado.filtros).senal;
+    const sg = decidir(ind, i, 3, estado.filtros, tiempo).senal;
     if (sg !== "LONG" && sg !== "SHORT") return;
     const x = X(k), v = velas[i];
     if (sg === "LONG") {
@@ -1012,7 +1014,7 @@ const CLAVE_REGISTRO = "senales-cripto-registro-v2";
 const estado = {
   pares: ["BTC-USD", "ETH-USD", "SOL-USD"],
   principal: "BTC-USD",
-  tiempo: "15m",
+  tiempo: "1h",
   auto: 30,
   horizonte: 5,
   comision: 0.6,
@@ -1098,7 +1100,7 @@ async function cargarPar(par, tiempo) {
   const vistaVelas = crudas;
   const vistaInd = indicadores(vistaVelas, alinearHTF(vistaVelas, velasH, htf, seg, segH), exigeTendencia(tiempo));
   const precio = crudas[crudas.length - 1].cierra;
-  return { velas, ind, d: decidir(ind, velas.length - 1, 3, estado.filtros), precio, vistaVelas, vistaInd };
+  return { velas, ind, d: decidir(ind, velas.length - 1, 3, estado.filtros, tiempo), precio, vistaVelas, vistaInd };
 }
 
 async function cargarPrueba(par, tiempo, horizonte, comision) {
@@ -1500,7 +1502,8 @@ function pintarGrafico() {
   const sg = !r.d.senal ? "sin datos"
     : r.d.senal === "ESPERAR" ? `ESPERAR · ${r.d.motivo || "sin acuerdo"} · puntaje ${r.d.puntaje > 0 ? "+" : ""}${r.d.puntaje}`
     : `${r.d.senal} · puntaje ${r.d.puntaje > 0 ? "+" : ""}${r.d.puntaje}`;
-  senalTxt.innerHTML = `Señal actual de ${esc(etiquetaPar(par))}: <strong>${esc(sg)}</strong> · marco ${esc(r.tiempo)}`;
+  const aviso = r.d && r.d.aviso ? ` · <em>${esc(r.d.aviso)}</em>` : "";
+  senalTxt.innerHTML = `Señal actual de ${esc(etiquetaPar(par))}: <strong>${esc(sg)}</strong>${aviso} · marco ${esc(r.tiempo)}`;
   pintarHistorico(par, r.tiempo);
   pintarRiesgo();
   pintarRonda();
@@ -1999,7 +2002,7 @@ function pintarPnL() {
 function recalcularSenales() {
   for (const par of Object.keys(resultados)) {
     const r = resultados[par];
-    if (r && r.ok) r.d = decidir(r.ind, r.velas.length - 1, 3, estado.filtros);
+    if (r && r.ok) r.d = decidir(r.ind, r.velas.length - 1, 3, estado.filtros, r.tiempo);
   }
   pintarTodas();
   pintarGrafico();
