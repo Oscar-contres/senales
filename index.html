@@ -137,7 +137,9 @@ button:focus-visible, select:focus-visible { outline: 2px solid var(--accent); o
 .aviso { color: var(--muted); font-size: 12px; margin: 20px 0 0; }
 
 /* Gráfico principal */
-.principal-cab { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px 16px; align-items: flex-end; }
+.principal-cab { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px 16px; align-items: flex-end; min-width: 0; }
+.panel.principal { grid-template-columns: minmax(0, 1fr); }
+.principal-cab > * { min-width: 0; max-width: 100%; }
 #senal-actual { margin: 0; font-size: 13px; }
 .prob-senal { margin: 4px 0 0; font-size: 13px; color: var(--ink); }
 .prob-senal:empty { display: none; }
@@ -146,6 +148,12 @@ button:focus-visible, select:focus-visible { outline: 2px solid var(--accent); o
 .pnl-cero { stroke: var(--line); stroke-dasharray: 3 3; }
 .check { display: flex; align-items: center; gap: 8px; min-height: 36px; font-size: 14px; color: var(--ink); }
 .check input { width: 18px; height: 18px; margin: 0; flex: 0 0 auto; }
+.ronda { flex: 1 1 100%; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 14px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--chip); }
+.ronda > .muted { grid-column: 1 / -1; }
+.ronda-celda { display: grid; gap: 2px; min-width: 0; }
+.ronda-celda strong { font: 600 16px "IBM Plex Mono", ui-monospace, monospace; color: var(--ink); overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.ronda-celda small { font: 12px "IBM Plex Mono", ui-monospace, monospace; }
+.ronda-rojo { color: var(--sell) !important; }
 #info-vela { margin: 0; font: 400 12px/1.5 "IBM Plex Mono", ui-monospace, monospace; color: var(--muted); font-variant-numeric: tabular-nums; min-height: 1.5em; }
 .grafico-wrap { width: 100%; min-width: 0; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); padding: 4px 2px 0; overflow: hidden; }
 .card svg.grafica { border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
@@ -326,6 +334,7 @@ svg.grafica { display: block; width: 100%; max-width: 100%; height: auto; touch-
         <label class="check"><input type="checkbox" id="f-volumen"> Solo con volumen de 3 veces o más</label>
         <label class="check"><input type="checkbox" id="f-agotamiento"> No entrar tras 3 velas seguidas en la misma dirección</label>
         <label class="check"><input type="checkbox" id="f-mechas"> Anular si la vela anterior tiene mecha larga</label>
+        <label class="check"><input type="checkbox" id="f-confluencia"> Exigir 5 de 6 reglas de acuerdo (80%)</label>
         <p class="muted">Cada filtro solo quita señales. Cambian la señal actual, el gráfico y la simulación.</p>
       </div>
     </div>
@@ -359,7 +368,13 @@ svg.grafica { display: block; width: 100%; max-width: 100%; height: auto; touch-
       </div>
       <p id="senal-actual" class="muted"></p>
       <p id="prob-senal" class="prob-senal"></p>
-      <p id="cierre-vela" class="muted"></p>
+      <div class="ronda">
+        <div class="ronda-celda"><span class="etiqueta">Fecha de vencimiento</span><strong id="ronda-vence">—</strong></div>
+        <div class="ronda-celda"><span class="etiqueta">Cuenta atrás</span><strong id="ronda-cuenta" class="ronda-rojo">—</strong></div>
+        <div class="ronda-celda"><span class="etiqueta">Precio que superar</span><strong id="ronda-ref">—</strong></div>
+        <div class="ronda-celda"><span class="etiqueta">Precio actual</span><strong id="ronda-actual">—</strong><small id="ronda-dif"></small></div>
+        <p class="muted">Ronda de la vela del marco elegido, como en Sube o Baja de Binance. Usa la hora de tu teléfono: si no coincide con Binance, activa la fecha y hora automáticas.</p>
+      </div>
       <p id="historico-senal" class="muted"></p>
       <div class="grupo">
         <label class="etiqueta" for="pnl-monto">Simulación: monto por operación (USD)</label>
@@ -556,7 +571,7 @@ function indicadores(velas, htf, exigeTend = false) {
 }
 
 // Filtros opcionales: apagados por defecto. Solo quitan señales; no cambian el puntaje.
-const SIN_FILTROS = { volumen: false, agotamiento: false, mechas: false };
+const SIN_FILTROS = { volumen: false, agotamiento: false, mechas: false, confluencia: false };
 
 // Tres velas seguidas en la dirección de la señal (incluida la actual), todas con cuerpo de al menos 0,5 ATR.
 function agotado(ind, i, senal) {
@@ -623,22 +638,28 @@ function decidir(ind, i, umbral = 3, filtros = SIN_FILTROS) {
   const tramo = i >= 3 ? Math.abs(c - ind.velas[i - 3].cierra) : 0;
   if (rangoVela > UMBRAL_VELA * aPrev || tramo > UMBRAL_TRAMO * aPrev) {
     reglas.push({ texto: "mercado muy alterado: no se da señal, esperar", pts: 0 });
-    return { senal: "ESPERAR", puntaje, reglas, niveles: null, alterado: true };
+    return { senal: "ESPERAR", puntaje, reglas, niveles: null, alterado: true, motivo: "Mercado muy alterado" };
   }
   let senal = puntaje >= umbral ? "LONG" : puntaje <= -umbral ? "SHORT" : "ESPERAR";
+  // Motivo que se muestra en pantalla cuando no hay señal.
+  let motivo = senal === "ESPERAR" ? "Mercado lateral" : null;
   if (ind.exigeTend && ((senal === "LONG" && t <= 0) || (senal === "SHORT" && t >= 0))) {
     reglas.push({ texto: "va contra la tendencia de 1 hora: esperar", pts: 0 });
     senal = "ESPERAR";
+    motivo = "Va contra la tendencia de 1 hora";
   }
-  // Filtros opcionales: si se cumple uno, se anula la señal.
+  // Filtros opcionales: si se cumple uno, la señal se anula y el motivo aparece en pantalla.
   if (senal !== "ESPERAR") {
-    let motivo = null;
-    if (filtros.volumen && v.volumen < 3 * vm) motivo = "volumen menor a 3 veces el promedio";
-    else if (filtros.agotamiento && agotado(ind, i, senal)) motivo = "3 velas seguidas en la misma dirección: llega tarde";
-    else if (filtros.mechas && mechaLarga(ind, i)) motivo = "mecha larga en la vela anterior: indecisión";
-    if (motivo) {
-      reglas.push({ texto: motivo + ": esperar", pts: 0 });
+    const favor = reglas.filter(x => Math.sign(x.pts) === Math.sign(puntaje)).length;
+    let bloqueo = null;
+    if (filtros.confluencia && favor < 5) bloqueo = "Poca confluencia: menos de 5 de 6 reglas de acuerdo";
+    else if (filtros.volumen && v.volumen < 3 * vm) bloqueo = "Sin volumen óptimo: menos de 3 veces el promedio";
+    else if (filtros.agotamiento && agotado(ind, i, senal)) bloqueo = "Llega tarde: 3 velas seguidas en la misma dirección";
+    else if (filtros.mechas && mechaLarga(ind, i)) bloqueo = "Indecisión: mecha larga en la vela anterior";
+    if (bloqueo) {
+      reglas.push({ texto: bloqueo + ": esperar", pts: 0 });
       senal = "ESPERAR";
+      motivo = bloqueo;
     }
   }
   let niveles = null;
@@ -646,7 +667,7 @@ function decidir(ind, i, umbral = 3, filtros = SIN_FILTROS) {
     const dir = senal === "LONG" ? 1 : -1;
     niveles = { entrada: c, stop: c - dir * 1.5 * a, objetivo: c + dir * 3 * a, atr: a };
   }
-  return { senal, puntaje, reglas, niveles };
+  return { senal, puntaje, reglas, niveles, motivo };
 }
 
 // Sigue una señal en las velas posteriores: primero stop u objetivo, si no, cierre al horizonte.
@@ -982,6 +1003,7 @@ const PARES = [
   { id: "ADA-USD", nombre: "Cardano" },
   { id: "AVAX-USD", nombre: "Avalanche" },
   { id: "LINK-USD", nombre: "Chainlink" },
+  { id: "BNB-USD", nombre: "BNB" },
 ];
 const VELAS = 300;
 const CLAVE = "senales-cripto-v1";
@@ -995,7 +1017,7 @@ const estado = {
   horizonte: 5,
   comision: 0.6,
   tamano: "normal",
-  filtros: { volumen: false, agotamiento: false, mechas: false },
+  filtros: { volumen: false, agotamiento: false, mechas: false, confluencia: false },
   ver: {},
 };
 const resultados = {};
@@ -1475,10 +1497,13 @@ function pintarGrafico() {
   const prev = vv[idx - 1];
   const cambio = prev ? ((v.cierra - prev.cierra) / prev.cierra) * 100 : 0;
   info.textContent = `${etiquetaHora(v.t, r.tiempo)} · Apertura ${fmtPrecio(v.abre)} · Máx ${fmtPrecio(v.alto)} · Mín ${fmtPrecio(v.bajo)} · Cierre ${fmtPrecio(v.cierra)} · Vol ${fmtVol.format(v.volumen)} · ${fmtPct.format(cambio)}%`;
-  const sg = r.d.senal ? `${r.d.senal} · puntaje ${r.d.puntaje > 0 ? "+" : ""}${r.d.puntaje}` : "sin datos";
+  const sg = !r.d.senal ? "sin datos"
+    : r.d.senal === "ESPERAR" ? `ESPERAR · ${r.d.motivo || "sin acuerdo"} · puntaje ${r.d.puntaje > 0 ? "+" : ""}${r.d.puntaje}`
+    : `${r.d.senal} · puntaje ${r.d.puntaje > 0 ? "+" : ""}${r.d.puntaje}`;
   senalTxt.innerHTML = `Señal actual de ${esc(etiquetaPar(par))}: <strong>${esc(sg)}</strong> · marco ${esc(r.tiempo)}`;
   pintarHistorico(par, r.tiempo);
   pintarRiesgo();
+  pintarRonda();
 }
 
 function indiceDesde(e) {
@@ -1538,6 +1563,7 @@ function pintarControles() {
   document.getElementById("f-volumen").checked = estado.filtros.volumen;
   document.getElementById("f-agotamiento").checked = estado.filtros.agotamiento;
   document.getElementById("f-mechas").checked = estado.filtros.mechas;
+  document.getElementById("f-confluencia").checked = estado.filtros.confluencia;
 }
 
 function leerPrefs() {
@@ -1556,7 +1582,7 @@ function leerPrefs() {
     if ([0.1, 0.4, 0.6, 1].includes(x.comision)) estado.comision = x.comision;
     if (["compacto", "normal", "grande"].includes(x.tamano)) estado.tamano = x.tamano;
     if (x.filtros && typeof x.filtros === "object") {
-      for (const k of ["volumen", "agotamiento", "mechas"]) {
+      for (const k of ["volumen", "agotamiento", "mechas", "confluencia"]) {
         if (typeof x.filtros[k] === "boolean") estado.filtros[k] = x.filtros[k];
       }
     }
@@ -1763,6 +1789,7 @@ function medirSenales(velas, ind, seg) {
       vr: ind.volMedia[i] ? velas[i].volumen / ind.volMedia[i] : 0,
       agot: agotado(ind, i, d.senal),
       mecha: mechaLarga(ind, i),
+      acuerdo: d.reglas.filter(x => Math.sign(x.pts) === Math.sign(d.puntaje)).length,
     });
   }
   return { cuenta, filas, cortes };
@@ -1899,6 +1926,11 @@ function pintarHistorico(par, tiempo) {
         ${tablaGrupos(c.filas, [
           ["Sin mecha larga", x => !x.mecha],
           ["Con mecha larga (bloqueada)", x => x.mecha],
+        ])}
+        <p class="muted"><strong>Confluencia.</strong> Cuántas de las seis reglas van en la dirección de la señal. Si 5 o 6 acierta más en las dos mitades, conviene activar el filtro de 5 de 6.</p>
+        ${tablaGrupos(c.filas, [
+          ["5 o 6 reglas de acuerdo", x => x.acuerdo >= 5],
+          ["3 o 4 reglas de acuerdo", x => x.acuerdo < 5],
         ])}`;
     }
   }).catch(() => {
@@ -1930,8 +1962,9 @@ function pintarPnL() {
   if (estado.filtros.volumen) activos.push("volumen de 3 veces");
   if (estado.filtros.agotamiento) activos.push("sin entrar tras 3 velas seguidas");
   if (estado.filtros.mechas) activos.push("sin mecha larga");
+  if (estado.filtros.confluencia) activos.push("5 de 6 reglas de acuerdo");
   const filtro = activos.length ? "con filtros: " + activos.join(", ") : "sin filtros";
-  const pasa = f => (!estado.filtros.volumen || f.vr >= 3) && (!estado.filtros.agotamiento || !f.agot) && (!estado.filtros.mechas || !f.mecha);
+  const pasa = f => (!estado.filtros.volumen || f.vr >= 3) && (!estado.filtros.agotamiento || !f.agot) && (!estado.filtros.mechas || !f.mecha) && (!estado.filtros.confluencia || f.acuerdo >= 5);
   const ops = ultimaMedicion.c.filas.filter(pasa).slice(-100);
   if (!ops.length) {
     cont.innerHTML = `<p class="muted">No hay señales para simular (${filtro}).</p>`;
@@ -2037,6 +2070,37 @@ function textoContador(tiempo) {
   const falta = seg - ((Date.now() / 1000) % seg);
   const m = Math.floor(falta / 60), s = Math.floor(falta % 60);
   return `cierra ${m}:${String(s).padStart(2, "0")}`;
+}
+
+// Ronda de "Sube o Baja" como en Binance: vence al cierre del marco elegido.
+// El precio que superar es la apertura de la vela actual.
+const fmtDif = new Intl.NumberFormat("es", { signDisplay: "exceptZero", minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const fmtFecha = new Intl.DateTimeFormat("es", { timeZone: "America/Caracas", day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+
+function pintarRonda() {
+  const vence = document.getElementById("ronda-vence");
+  if (!vence) return;
+  const r = resultados[estado.principal];
+  if (!r || !r.ok || !r.vistaVelas || !r.vistaVelas.length) {
+    ["ronda-vence", "ronda-cuenta", "ronda-ref", "ronda-actual"].forEach(id => { document.getElementById(id).textContent = "—"; });
+    document.getElementById("ronda-dif").textContent = "";
+    return;
+  }
+  const seg = TIEMPOS[r.tiempo];
+  const ahora = Date.now() / 1000;
+  const venceS = (Math.floor(ahora / seg) + 1) * seg;
+  const falta = Math.max(0, venceS - ahora);
+  const m = Math.floor(falta / 60), s = Math.floor(falta % 60);
+  const apertura = r.vistaVelas[r.vistaVelas.length - 1].abre;
+  const actual = r.precioVivo ?? r.precio;
+  const dif = actual - apertura;
+  vence.textContent = fmtFecha.format(new Date(venceS * 1000));
+  document.getElementById("ronda-cuenta").textContent = `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  document.getElementById("ronda-ref").textContent = `$${fmtPrecio(apertura)}`;
+  document.getElementById("ronda-actual").textContent = `$${fmtPrecio(actual)}`;
+  const difEl = document.getElementById("ronda-dif");
+  difEl.textContent = `${fmtDif.format(dif)} (${fmtPct.format((dif / apertura) * 100)}%)`;
+  difEl.style.color = dif >= 0 ? "var(--buy)" : "var(--sell)";
 }
 
 function programar() {
@@ -2179,7 +2243,7 @@ document.getElementById("comision").addEventListener("change", e => {
   pintarPnL();
 });
 
-for (const [id, clave] of [["f-volumen", "volumen"], ["f-agotamiento", "agotamiento"], ["f-mechas", "mechas"]]) {
+for (const [id, clave] of [["f-volumen", "volumen"], ["f-agotamiento", "agotamiento"], ["f-mechas", "mechas"], ["f-confluencia", "confluencia"]]) {
   document.getElementById(id).addEventListener("change", e => {
     estado.filtros[clave] = e.target.checked;
     guardarPrefs();
@@ -2202,9 +2266,7 @@ programar();
 conectarTiempoReal();
 setInterval(() => estado.pares.forEach(par => actualizarFlujo(par)), 5000);
 setInterval(() => {
-  const el = document.getElementById("cierre-vela");
-  const r = resultados[estado.principal];
-  if (el && r && r.ok) el.textContent = textoCierre(r.tiempo);
+  pintarRonda();
   document.querySelectorAll(".contador-vela").forEach(c => { c.textContent = textoContador(c.dataset.tiempo); });
 }, 1000);
 refrescar();
