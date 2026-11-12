@@ -336,6 +336,8 @@ svg.grafica { display: block; width: 100%; max-width: 100%; height: auto; touch-
         <label class="check"><input type="checkbox" id="f-agotamiento"> No entrar tras 3 velas seguidas en la misma dirección</label>
         <label class="check"><input type="checkbox" id="f-mechas"> Anular si la vela anterior tiene mecha larga</label>
         <label class="check"><input type="checkbox" id="f-confluencia"> Exigir 5 de 6 reglas de acuerdo (80%)</label>
+        <label class="check"><input type="checkbox" id="f-lateral"> Quitar señales de 5 m y 15 m si el 1 h está lateral (medias a menos de 0,5 ATR)</label>
+        <label class="check"><input type="checkbox" id="f-plano"> No operar en modo plano (ATR en el tercio más bajo de 300 velas)</label>
         <p class="muted">Cada filtro solo quita señales. Cambian la señal actual, el gráfico y la simulación.</p>
       </div>
     </div>
@@ -516,6 +518,9 @@ function bollinger(c, n = 20, k = 2) {
 // Filtro de mercado alterado (ver decidir): medidos en múltiplos del ATR.
 const UMBRAL_VELA = 2.5;   // rango de una sola vela
 const UMBRAL_TRAMO = 4;    // movimiento neto de las últimas 3 velas
+// Filtros opcionales (apagados por defecto):
+const UMBRAL_LATERAL = 0.5; // 1 h lateral: EMA 21 y EMA 50 separadas menos de 0,5 ATR del 1 h
+const VENTANA_PLANO = 300;  // modo plano: ATR/precio dentro del tercio más bajo de estas velas
 
 // Rango verdadero medio: mide cuánto se mueve el precio por vela.
 function atr(velas, n = 14) {
@@ -535,11 +540,16 @@ function atr(velas, n = 14) {
   return salida;
 }
 
-// Tendencia del marco superior por vela: +1 alcista, -1 bajista, 0 sin clara.
+// Tendencia del marco superior por vela: el signo indica la dirección (+ alcista, - bajista, 0 sin clara).
+// El tamaño es la separación entre EMA 21 y EMA 50 en múltiplos del ATR; lo usa el filtro de 1 h lateral.
 function tendenciaHTF(velasH) {
   const c = velasH.map(v => v.cierra);
-  const e21 = ema(c, 21), e50 = ema(c, 50);
-  return e21.map((x, k) => (x == null || e50[k] == null ? 0 : x > e50[k] ? 1 : x < e50[k] ? -1 : 0));
+  const e21 = ema(c, 21), e50 = ema(c, 50), a = atr(velasH, 14);
+  return e21.map((x, k) => {
+    if (x == null || e50[k] == null) return 0;
+    const dif = x - e50[k];
+    return a[k] ? dif / a[k] : Math.sign(dif);
+  });
 }
 
 // Para cada vela del marco actual, toma la última vela del marco superior ya cerrada.
@@ -577,7 +587,7 @@ function indicadores(velas, htf, exigeTend = false) {
 }
 
 // Filtros opcionales: apagados por defecto. Solo quitan señales; no cambian el puntaje.
-const SIN_FILTROS = { volumen: false, agotamiento: false, mechas: false, confluencia: false };
+const SIN_FILTROS = { volumen: false, agotamiento: false, mechas: false, confluencia: false, lateral: false, plano: false };
 
 // Tres velas seguidas en la dirección de la señal (incluida la actual), todas con cuerpo de al menos 0,5 ATR.
 function agotado(ind, i, senal) {
@@ -598,6 +608,17 @@ function mechaLarga(ind, i) {
   const arriba = v.alto - Math.max(v.abre, v.cierra);
   const abajo = Math.min(v.abre, v.cierra) - v.bajo;
   return Math.max(arriba, abajo) > 0.5 * cuerpo;
+}
+
+// Modo plano: el ATR relativo al precio está en el tercio más bajo de las últimas velas del marco (hasta i).
+function esPlano(ind, i) {
+  if (ind.atr[i] == null) return false;
+  const ini = Math.max(0, i - VENTANA_PLANO + 1);
+  const vals = [];
+  for (let j = ini; j <= i; j++) if (ind.atr[j] != null) vals.push(ind.atr[j] / ind.velas[j].cierra);
+  if (vals.length < 60) return false;
+  vals.sort((x, y) => x - y);
+  return ind.atr[i] / ind.velas[i].cierra < vals[Math.floor(vals.length / 3)];
 }
 
 // Puntaje de -6 a +6 con seis reglas de ±1. LONG con 3 o más, SHORT con -3 o menos.
@@ -662,6 +683,8 @@ function decidir(ind, i, umbral = 3, filtros = SIN_FILTROS, marco = null) {
     else if (filtros.volumen && v.volumen < 3 * vm) bloqueo = "Sin volumen óptimo: menos de 3 veces el promedio";
     else if (filtros.agotamiento && agotado(ind, i, senal)) bloqueo = "Llega tarde: 3 velas seguidas en la misma dirección";
     else if (filtros.mechas && marco !== "1h" && mechaLarga(ind, i)) bloqueo = "Indecisión: mecha larga en la vela anterior";
+    else if (filtros.lateral && ind.exigeTend && Math.abs(t) < UMBRAL_LATERAL) bloqueo = "1 h lateral: las medias del 1 h están muy juntas";
+    else if (filtros.plano && esPlano(ind, i)) bloqueo = "Modo plano: ATR en el tercio más bajo de las últimas 300 velas";
     if (bloqueo) {
       reglas.push({ texto: bloqueo + ": esperar", pts: 0 });
       senal = "ESPERAR";
@@ -725,11 +748,16 @@ function cerradas(velas, seg, ahora = Date.now() / 1000) {
   return velas.filter(v => v.t + seg <= ahora);
 }
 
+// Filtros activos en el momento de anotar la señal, para comparar después sin mezclar periodos.
+function filtrosActivos() {
+  return Object.keys(estado.filtros).filter(k => estado.filtros[k]);
+}
+
 function nuevaEntrada(par, tiempo, horizonte, vela, senal, niveles, ahora) {
   return {
     id: `${par}|${tiempo}|${vela.t}`, par, tiempo, horizonte, senal,
     velaT: vela.t, precio: niveles.entrada, stop: niveles.stop, objetivo: niveles.objetivo,
-    hora: ahora, resultado: null, motivo: null, salida: null,
+    hora: ahora, resultado: null, motivo: null, salida: null, filtros: filtrosActivos(),
   };
 }
 
@@ -1027,7 +1055,7 @@ const estado = {
   horizonte: 5,
   comision: 0.6,
   tamano: "normal",
-  filtros: { volumen: false, agotamiento: false, mechas: false, confluencia: false },
+  filtros: { volumen: false, agotamiento: false, mechas: false, confluencia: false, lateral: false, plano: false },
   ver: {},
 };
 const resultados = {};
@@ -1541,7 +1569,7 @@ function pintarRegistro() {
     const estadoTxt = e.resultado === "acierto" ? `<span class="res-acierto">Acertó · ${esc(e.motivo)}</span>`
       : e.resultado === "fallo" ? `<span class="res-fallo">Falló · ${esc(e.motivo)}</span>`
       : `<span class="res-pend">Pendiente</span>`;
-    return `<tr><td>${hora}</td><td>${esc(etiquetaPar(e.par))}</td><td>${esc(e.senal)}</td><td>${fmtPrecio(e.precio)}</td><td>${fmtPrecio(e.stop)}</td><td>${fmtPrecio(e.objetivo)}</td><td>${esc(e.tiempo)}</td><td>${estadoTxt}</td></tr>`;
+    return `<tr><td>${hora}</td><td>${esc(etiquetaPar(e.par))}</td><td>${esc(e.senal)}</td><td>${fmtPrecio(e.precio)}</td><td>${fmtPrecio(e.stop)}</td><td>${fmtPrecio(e.objetivo)}</td><td>${esc(e.tiempo)}${e.filtros && e.filtros.length ? `<br><small class="muted">${esc(e.filtros.join(", "))}</small>` : ""}</td><td>${estadoTxt}</td></tr>`;
   }).join("");
   cont.innerHTML = `
     <div class="cab">
@@ -1575,6 +1603,8 @@ function pintarControles() {
   document.getElementById("f-agotamiento").checked = estado.filtros.agotamiento;
   document.getElementById("f-mechas").checked = estado.filtros.mechas;
   document.getElementById("f-confluencia").checked = estado.filtros.confluencia;
+  document.getElementById("f-lateral").checked = estado.filtros.lateral;
+  document.getElementById("f-plano").checked = estado.filtros.plano;
 }
 
 function leerPrefs() {
@@ -1593,7 +1623,7 @@ function leerPrefs() {
     if ([0.1, 0.4, 0.6, 1].includes(x.comision)) estado.comision = x.comision;
     if (["compacto", "normal", "grande"].includes(x.tamano)) estado.tamano = x.tamano;
     if (x.filtros && typeof x.filtros === "object") {
-      for (const k of ["volumen", "agotamiento", "mechas", "confluencia"]) {
+      for (const k of ["volumen", "agotamiento", "mechas", "confluencia", "lateral", "plano"]) {
         if (typeof x.filtros[k] === "boolean") estado.filtros[k] = x.filtros[k];
       }
     }
@@ -1800,10 +1830,11 @@ function medirSenales(velas, ind, seg) {
       vr: ind.volMedia[i] ? velas[i].volumen / ind.volMedia[i] : 0,
       agot: agotado(ind, i, d.senal),
       mecha: mechaLarga(ind, i),
+      i, lateral: ind.exigeTend && Math.abs(ind.htf[i]) < UMBRAL_LATERAL,
       acuerdo: d.reglas.filter(x => Math.sign(x.pts) === Math.sign(d.puntaje)).length,
     });
   }
-  return { cuenta, filas, cortes };
+  return { cuenta, filas, cortes, ind };
 }
 
 // Porcentaje de acierto con su margen de error del 95%. Null si no hay casos.
@@ -2036,8 +2067,10 @@ function pintarPnL() {
   if (estado.filtros.agotamiento) activos.push("sin entrar tras 3 velas seguidas");
   if (estado.filtros.mechas) activos.push("sin mecha larga");
   if (estado.filtros.confluencia) activos.push("5 de 6 reglas de acuerdo");
+  if (estado.filtros.lateral) activos.push("sin 1 h lateral");
+  if (estado.filtros.plano) activos.push("sin modo plano");
   const filtro = activos.length ? "con filtros: " + activos.join(", ") : "sin filtros";
-  const pasa = f => (!estado.filtros.volumen || f.vr >= 3) && (!estado.filtros.agotamiento || !f.agot) && (!estado.filtros.mechas || !f.mecha) && (!estado.filtros.confluencia || f.acuerdo >= 5);
+  const pasa = f => (!estado.filtros.volumen || f.vr >= 3) && (!estado.filtros.agotamiento || !f.agot) && (!estado.filtros.mechas || !f.mecha) && (!estado.filtros.confluencia || f.acuerdo >= 5) && (!estado.filtros.lateral || f.lateral) && (!estado.filtros.plano || !esPlano(ultimaMedicion.c.ind, f.i));
   const ops = ultimaMedicion.c.filas.filter(pasa).slice(-100);
   if (!ops.length) {
     cont.innerHTML = `<p class="muted">No hay señales para simular (${filtro}).</p>`;
@@ -2316,7 +2349,7 @@ document.getElementById("comision").addEventListener("change", e => {
   pintarPnL();
 });
 
-for (const [id, clave] of [["f-volumen", "volumen"], ["f-agotamiento", "agotamiento"], ["f-mechas", "mechas"], ["f-confluencia", "confluencia"]]) {
+for (const [id, clave] of [["f-volumen", "volumen"], ["f-agotamiento", "agotamiento"], ["f-mechas", "mechas"], ["f-confluencia", "confluencia"], ["f-lateral", "lateral"], ["f-plano", "plano"]]) {
   document.getElementById(id).addEventListener("change", e => {
     estado.filtros[clave] = e.target.checked;
     guardarPrefs();
