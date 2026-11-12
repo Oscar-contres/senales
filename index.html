@@ -1016,6 +1016,8 @@ const PARES = [
 const VELAS = 300;
 const CLAVE = "senales-cripto-v1";
 const CLAVE_REGISTRO = "senales-cripto-registro-v2";
+// El registro en vivo solo anota estos marcos. El 1m queda fuera: genera más ruido que señales útiles.
+const REG_MARCOS = ["5m", "15m", "1h"];
 
 const estado = {
   pares: ["BTC-USD", "ETH-USD", "SOL-USD"],
@@ -1543,7 +1545,7 @@ function pintarRegistro() {
   }).join("");
   cont.innerHTML = `
     <div class="cab">
-      <div><div class="par">Registro en vivo</div><div class="nombre">Señales anotadas automáticamente, sin dinero real</div></div>
+      <div><div class="par">Registro en vivo</div><div class="nombre">Señales de 5m, 15m y 1h anotadas automáticamente, sin dinero real</div></div>
       <button class="btn" type="button" id="borrar-registro">Borrar registro</button>
     </div>
     <dl class="metricas">
@@ -1636,7 +1638,7 @@ function guardarRegistro() {
 
 function registrar(par, r) {
   const ultima = r.velas[r.velas.length - 1];
-  if (r.d.senal === "LONG" || r.d.senal === "SHORT") {
+  if (REG_MARCOS.includes(r.tiempo) && (r.d.senal === "LONG" || r.d.senal === "SHORT")) {
     const id = `${par}|${r.tiempo}|${ultima.t}`;
     if (!registro.some(e => e.id === id)) {
       registro.push(nuevaEntrada(par, r.tiempo, estado.horizonte, ultima, r.d.senal, r.d.niveles, Date.now()));
@@ -2328,7 +2330,7 @@ document.getElementById("actualizar").addEventListener("click", refrescar);
 
 leerPrefs();
 document.getElementById("tamano").value = estado.tamano;
-registro = leerRegistro();
+registro = leerRegistro().filter(e => REG_MARCOS.includes(e.tiempo));
 pintarControles();
 pintarTodas();
 pintarGrafico();
