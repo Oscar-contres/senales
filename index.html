@@ -255,6 +255,7 @@ svg.grafica { display: block; width: 100%; max-width: 100%; height: auto; touch-
 #comparar-resultado { min-width: 0; }
 .tabla-wrap { overflow-x: auto; margin-top: 10px; max-width: 100%; }
 .tabla { width: 100%; border-collapse: collapse; font: 12px/1.4 "IBM Plex Mono", ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+.tabla-wrap { max-width: 100%; overflow-x: auto; }
 .tabla th, .tabla td { text-align: left; padding: 7px 6px; border-top: 1px solid var(--line); white-space: nowrap; }
 .tabla th { color: var(--muted); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
 .tabla small { color: var(--muted); }
@@ -382,6 +383,11 @@ svg.grafica { display: block; width: 100%; max-width: 100%; height: auto; touch-
         <div id="pnl-resultado"></div>
       </div>
       <div id="volatilidad-senal"></div>
+      <div class="grupo">
+        <span class="etiqueta">Comparar temporalidades (mismos datos y reglas)</span>
+        <button class="btn" type="button" id="comparar-marcos">Comparar 5m, 15m y 1h</button>
+        <div id="comparar-resultado"></div>
+      </div>
     </div>
     <p id="info-vela" aria-live="off"></p>
     <div class="grafico-wrap" id="grafico-wrap"></div>
@@ -1533,7 +1539,7 @@ function pintarRegistro() {
     const estadoTxt = e.resultado === "acierto" ? `<span class="res-acierto">Acertó · ${esc(e.motivo)}</span>`
       : e.resultado === "fallo" ? `<span class="res-fallo">Falló · ${esc(e.motivo)}</span>`
       : `<span class="res-pend">Pendiente</span>`;
-    return `<li><span>${hora} · ${esc(etiquetaPar(e.par))} · ${esc(e.senal)} a ${fmtPrecio(e.precio)} · stop ${fmtPrecio(e.stop)} · objetivo ${fmtPrecio(e.objetivo)} · ${esc(e.tiempo)}</span>${estadoTxt}</li>`;
+    return `<tr><td>${hora}</td><td>${esc(etiquetaPar(e.par))}</td><td>${esc(e.senal)}</td><td>${fmtPrecio(e.precio)}</td><td>${fmtPrecio(e.stop)}</td><td>${fmtPrecio(e.objetivo)}</td><td>${esc(e.tiempo)}</td><td>${estadoTxt}</td></tr>`;
   }).join("");
   cont.innerHTML = `
     <div class="cab">
@@ -1545,7 +1551,7 @@ function pintarRegistro() {
       <div><dt>Evaluadas</dt><dd>${evaluadas.length}</dd></div>
       <div><dt>Acierto</dt><dd>${pct}</dd></div>
     </dl>
-    ${filas ? `<ul class="filas">${filas}</ul>` : `<p class="muted">Aún no hay señales LONG o SHORT. Deja la página abierta con actualización automática.</p>`}
+    ${filas ? `<div class="tabla-wrap"><table class="tabla"><thead><tr><th>Hora</th><th>Par</th><th>Señal</th><th>Entrada</th><th>Stop</th><th>Objetivo</th><th>Marco</th><th>Resultado</th></tr></thead><tbody>${filas}</tbody></table></div>` : `<p class="muted">Aún no hay señales LONG o SHORT. Deja la página abierta con actualización automática.</p>`}
     <p class="muted">Con pocas señales el porcentaje no dice nada. Hacen falta decenas de señales evaluadas antes de sacar conclusiones.</p>`;
 }
 
@@ -1946,6 +1952,68 @@ function pintarHistorico(par, tiempo) {
 // No es dinero real: cada señal cuenta como una operación, con pago de 80% y comisión por lado.
 let ultimaMedicion = null; // { par, tiempo, c } de la última medición terminada
 const fmtUsd = new Intl.NumberFormat("es", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+// ----- Comparación de temporalidades: mismos datos y reglas, dos formas de medir -----
+// Forma 1: sube o baja en la vela siguiente (pago binario).
+// Forma 2: stop 1,5 ATR y objetivo 3 ATR, con horizonte de estado.horizonte velas.
+let comparandoMarcos = false;
+
+async function compararMarcos(par) {
+  const filas = [];
+  for (const t of ["5m", "15m", "1h"]) {
+    const ind = await indicadoresParaSenal(par, t, "largo");
+    const velas = ind.velas, seg = TIEMPOS[t];
+    const { cuenta } = medirSenales(velas, ind, seg);
+    const n1 = cuenta.LONG.n1 + cuenta.SHORT.n1, ok1 = cuenta.LONG.ok1 + cuenta.SHORT.ok1;
+    const n2 = cuenta.LONG.n2 + cuenta.SHORT.n2, ok2 = cuenta.LONG.ok2 + cuenta.SHORT.ok2;
+    const bt = backtest(velas, ind, estado.horizonte, estado.comision);
+    const dias = (velas.length * seg) / 86400;
+    filas.push({
+      t, senDia: (n1 + n2) / dias, n1, ok1, n2, ok2,
+      bt: metricas(bt.res),
+    });
+  }
+  return filas;
+}
+
+function pintarComparacion(filas) {
+  const pct = x => (x === null || x === undefined || Number.isNaN(x)) ? "—" : `${fmtDec.format(x)}%`;
+  const celda = (ok, n) => n ? `${pct((ok / n) * 100)} (${n})` : "—";
+  const cuerpo = filas.map(f => `
+    <tr>
+      <td>${f.t}</td>
+      <td>${fmtDec.format(f.senDia)}</td>
+      <td>${celda(f.ok1, f.n1)}</td>
+      <td>${celda(f.ok2, f.n2)}</td>
+      <td>${f.bt.n || 0}</td>
+      <td>${f.bt.n ? pct(f.bt.acierto) : "—"}</td>
+      <td>${f.bt.n ? `${f.bt.prom >= 0 ? "+" : ""}${fmtDec.format(f.bt.prom)}%` : "—"}</td>
+    </tr>`).join("");
+  const eq = valorEsperado(0, estado.comision).equilibrio * 100;
+  document.getElementById("comparar-resultado").innerHTML = `
+    <div class="tabla-wrap"><table class="tabla">
+      <thead><tr><th>Marco</th><th>Señales/día</th><th>Sube/baja 1.ª mitad</th><th>Sube/baja 2.ª mitad</th><th>Stop/objetivo: operaciones</th><th>Stop/objetivo: acierto</th><th>Neto por operación</th></tr></thead>
+      <tbody>${cuerpo}</tbody>
+    </table></div>
+    <p class="muted">Sube/baja: el equilibrio es ${fmtDec.format(eq)}% con pago 80% y comisión ${estado.comision}% por lado. Stop/objetivo: el equilibrio ronda 33% antes de comisiones. No compares un porcentaje de una forma con el equilibrio de la otra. Neto por operación ya descuenta comisión. Con menos de ${MIN_CASOS} casos por mitad, el resultado no es concluyente.</p>`;
+}
+
+document.getElementById("comparar-marcos").addEventListener("click", async () => {
+  if (comparandoMarcos) return;
+  comparandoMarcos = true;
+  const btn = document.getElementById("comparar-marcos");
+  const out = document.getElementById("comparar-resultado");
+  btn.disabled = true;
+  out.innerHTML = '<p class="muted">Comparando 5m, 15m y 1h…</p>';
+  try {
+    pintarComparacion(await compararMarcos(estado.principal));
+  } catch (e) {
+    out.innerHTML = `<p class="muted">No se pudo comparar: ${esc(e.message)}</p>`;
+  } finally {
+    btn.disabled = false;
+    comparandoMarcos = false;
+  }
+});
 
 function pintarPnL() {
   const cont = document.getElementById("pnl-resultado");
