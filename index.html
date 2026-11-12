@@ -446,7 +446,7 @@ svg.grafica { display: block; width: 100%; max-width: 100%; height: auto; touch-
 <script>
 // LOGICA-INICIO
 const TIEMPOS = { "1m": 60, "5m": 300, "15m": 900, "1h": 3600, "6h": 21600 };
-const MARCOS = ["1m", "5m", "15m", "1h"];
+const MARCOS = ["5m", "15m", "1h"]; // el 1m se descartó: el ruido de ese marco destruye cualquier regla
 const MARCO_SUPERIOR = { "1m": "15m", "5m": "1h", "15m": "1h", "1h": "6h" };
 
 function ema(valores, n) {
@@ -1126,11 +1126,11 @@ async function cargarPrueba(par, tiempo, horizonte, comision) {
   };
 }
 
-// Compara cada marco (1m a 1h) con umbrales 2, 3 y 4, usando tu comisión y máximo de velas.
+// Compara cada marco (5m a 1h) con umbrales 2, 3 y 4, usando tu comisión y máximo de velas.
 async function compararUmbrales(par) {
   const { horizonte, comision } = estado;
   const filas = [];
-  for (const tiempo of ["1m", "5m", "15m", "1h"]) {
+  for (const tiempo of MARCOS) {
     const seg = TIEMPOS[tiempo];
     const segH = TIEMPOS[MARCO_SUPERIOR[tiempo]];
     const velas = cerradas(await pedirVelas(par, seg, 1000), seg);
@@ -1305,7 +1305,7 @@ function filasDireccion(tiempo, velas, velasH) {
 
 async function medirDireccionPar(par, largo, avance) {
   const filas = [];
-  for (const tiempo of ["1m", "5m", "15m", "1h"]) {
+  for (const tiempo of MARCOS) {
     const { velas, velasH } = largo
       ? await datosLargos(par, tiempo, (h, t) => avance && avance(`${tiempo}: parte ${h} de ${t}`))
       : await datosCortos(par, tiempo);
