@@ -134,6 +134,8 @@ select, input[type="number"], .btn {
 button:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 .estado { margin: 0; color: var(--muted); font-size: 13px; }
+.estado.actualizando::before { content: "● "; color: var(--accent); animation: pulso 1s ease-in-out infinite; }
+@keyframes pulso { 0%, 100% { opacity: 1; } 50% { opacity: .2; } }
 .aviso { color: var(--muted); font-size: 12px; margin: 20px 0 0; }
 
 /* Gráfico principal */
@@ -1082,6 +1084,16 @@ const horaCaracas = ms => new Date(ms).toLocaleTimeString("es", {
 const porcentajeDe = (nivel, entrada) => fmtPct.format(((nivel - entrada) / entrada) * 100) + "%";
 const fmtMetrica = m => (m.n ? `${fmtDec.format(m.acierto)}% (${m.n})` : "—");
 
+// Espera la promesa como máximo `ms` milisegundos. No pasa un AbortSignal a fetch: algunas vistas previas
+// no pueden reenviar esa señal y hacen fallar cada petición.
+function conTiempo(promesa, ms) {
+  let temporizador;
+  const limite = new Promise((_, rechazar) => {
+    temporizador = setTimeout(() => rechazar(Object.assign(new Error("sin respuesta"), { name: "AbortError" })), ms);
+  });
+  return Promise.race([promesa, limite]).finally(() => clearTimeout(temporizador));
+}
+
 async function pedirVelas(par, seg, cantidad) {
   // Binance devuelve las velas de la más antigua a la más reciente.
   // La última es la que se está formando: su cierre es el precio actual.
@@ -1093,16 +1105,11 @@ async function pedirVelas(par, seg, cantidad) {
     try {
       const url = `${base}/api/v3/klines?symbol=${simbolo(par)}&interval=${INTERVALO_BINANCE[seg]}&limit=${Math.min(cantidad, 1000)}`;
       // Si Binance no responde en 10 segundos, se pasa al otro dominio en vez de quedarse esperando.
-      const ctl = new AbortController();
-      const corte = setTimeout(() => ctl.abort(), 10000);
-      let datos;
-      try {
-        const resp = await fetch(url, { signal: ctl.signal });
+      const datos = await conTiempo((async () => {
+        const resp = await fetch(url);
         if (!resp.ok) throw new Error(`respondió ${resp.status}`);
-        datos = await resp.json();
-      } finally {
-        clearTimeout(corte);
-      }
+        return resp.json();
+      })(), 10000);
       if (!Array.isArray(datos)) throw new Error(datos.msg || "respuesta inesperada");
       return datos
         .map(f => ({ t: Math.floor(f[0] / 1000), abre: +f[1], alto: +f[2], bajo: +f[3], cierra: +f[4], volumen: +f[5] }))
@@ -1999,8 +2006,11 @@ let comparandoMarcos = false;
 
 async function compararMarcos(par) {
   const filas = [];
-  for (const t of ["5m", "15m", "1h"]) {
-    const ind = await indicadoresParaSenal(par, t, "largo");
+  const marcos = ["5m", "15m", "1h"];
+  // Los tres marcos se piden a la vez: una demora en uno no hace esperar a los demás.
+  const inds = await Promise.all(marcos.map(t => indicadoresParaSenal(par, t, "largo")));
+  for (let k = 0; k < marcos.length; k++) {
+    const t = marcos[k], ind = inds[k];
     const velas = ind.velas, seg = TIEMPOS[t];
     const { cuenta } = medirSenales(velas, ind, seg);
     const n1 = cuenta.LONG.n1 + cuenta.SHORT.n1, ok1 = cuenta.LONG.ok1 + cuenta.SHORT.ok1;
@@ -2229,30 +2239,41 @@ async function refrescar() {
   const btn = document.getElementById("actualizar");
   const txt = document.getElementById("estado");
   btn.disabled = true;
-  let fallos = 0;
+  let fallos = 0, listos = 0;
+  const fallidos = [];
+  txt.classList.add("actualizando");
   try {
-    for (let k = 0; k < pares.length; k++) {
-      txt.textContent = `Consultando ${pares[k].replace("-USD", "")} en marco ${tiempo} (${k + 1} de ${pares.length})…`;
+    // Todos los pares se piden a la vez: un par lento no hace esperar a los demás.
+    await Promise.all(pares.map(async par => {
       try {
-        resultados[pares[k]] = { ok: true, tiempo, ...(await cargarPar(pares[k], tiempo)) };
-        registrar(pares[k], resultados[pares[k]]);
+        resultados[par] = { ok: true, tiempo, ...(await cargarPar(par, tiempo)) };
+        registrar(par, resultados[par]);
       } catch (e) {
-        fallos++;
-        resultados[pares[k]] = { ok: false, tiempo, error: e.message };
+        fallidos.push(par);
+        resultados[par] = { ok: false, tiempo, error: e.message };
+      } finally {
+        listos++;
+        txt.textContent = `Consultando marco ${tiempo}: ${listos} de ${pares.length} pares listos…`;
       }
-      // Si el dibujo falla, la actualización sigue y no se queda bloqueada.
-      try {
-        pintarTodas();
-        pintarGrafico();
-        pintarRegistro();
-      } catch (e) {
-        fallos++;
-        console.error("Error al dibujar:", e);
-      }
+    }));
+    // Cede el control al navegador antes de dibujar, para que la pantalla siga fluida.
+    await esperar(0);
+    // Si el dibujo falla, la actualización sigue y no se queda bloqueada.
+    try {
+      pintarTodas();
+      pintarGrafico();
+      pintarRegistro();
+    } catch (e) {
+      fallos++;
+      console.error("Error al dibujar:", e);
     }
-    txt.textContent = `Actualizado a las ${horaCaracas(Date.now())} (hora Venezuela)` + (fallos ? `. ${fallos} con error.` : ".");
+    // Dice qué pares fallaron, por nombre, para saber cuál revisar.
+    txt.textContent = `Actualizado a las ${horaCaracas(Date.now())} (hora Venezuela)` +
+      (fallidos.length ? `. Con error: ${fallidos.map(p => etiquetaPar(p)).join(", ")}.` : ".") +
+      (fallos ? " Hubo un error al dibujar; revisa la consola." : "");
   } finally {
     // Pase lo que pase, la página vuelve a poder actualizarse.
+    txt.classList.remove("actualizando");
     btn.disabled = false;
     cargando = false;
   }
