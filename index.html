@@ -1085,7 +1085,11 @@ const fmtMetrica = m => (m.n ? `${fmtDec.format(m.acierto)}% (${m.n})` : "—");
 async function pedirVelas(par, seg, cantidad) {
   // Binance devuelve las velas de la más antigua a la más reciente.
   // La última es la que se está formando: su cierre es el precio actual.
-  for (const base of API_BINANCE) {
+  // Dos rondas por los dominios: si ninguno responde, se espera 1 segundo y se vuelve a intentar una vez.
+  const intentos = [...API_BINANCE, ...API_BINANCE];
+  for (let k = 0; k < intentos.length; k++) {
+    const base = intentos[k];
+    if (k === API_BINANCE.length) await esperar(1000);
     try {
       const url = `${base}/api/v3/klines?symbol=${simbolo(par)}&interval=${INTERVALO_BINANCE[seg]}&limit=${Math.min(cantidad, 1000)}`;
       // Si Binance no responde en 10 segundos, se pasa al otro dominio en vez de quedarse esperando.
@@ -1104,7 +1108,9 @@ async function pedirVelas(par, seg, cantidad) {
         .map(f => ({ t: Math.floor(f[0] / 1000), abre: +f[1], alto: +f[2], bajo: +f[3], cierra: +f[4], volumen: +f[5] }))
         .slice(-cantidad);
     } catch (e) {
-      // Prueba con el siguiente dominio
+      // Prueba con el siguiente dominio. El aviso queda en la consola y la página sigue funcionando.
+      const motivo = e.name === "AbortError" ? "sin respuesta en 10 segundos" : e.message;
+      console.warn(`Aviso: ${par} (${seg} s) falló en ${base} (intento ${k + 1} de ${intentos.length}): ${motivo}`);
     }
   }
   if (location.protocol === "file:") {
