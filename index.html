@@ -422,6 +422,8 @@ svg.grafica { display: block; width: 100%; max-width: 100%; height: auto; touch-
     </div>
     <div class="acciones"><button class="btn primario" id="direccion-btn" type="button" onclick="ejecutarMedirDireccion()">Medir acierto sube o baja</button></div>
     <div id="direccion-resultado"></div>
+    <div class="acciones"><button class="btn" id="descargar-csv" type="button">Descargar historial CSV (1 año)</button></div>
+    <p class="muted" id="descarga-estado">Descarga el marco seleccionado arriba. Para la hipótesis 1, selecciona 15 m.</p>
   </section>
 
   <section class="panel" aria-label="Calculadora de riesgo">
@@ -1094,7 +1096,8 @@ function conTiempo(promesa, ms) {
   return Promise.race([promesa, limite]).finally(() => clearTimeout(temporizador));
 }
 
-async function pedirVelas(par, seg, cantidad) {
+// Si se indica `desde` (milisegundos), pide las velas que empiezan en esa fecha, en orden.
+async function pedirVelas(par, seg, cantidad, desde = null) {
   // Binance devuelve las velas de la más antigua a la más reciente.
   // La última es la que se está formando: su cierre es el precio actual.
   // Dos rondas por los dominios: si ninguno responde, se espera 1 segundo y se vuelve a intentar una vez.
@@ -1103,7 +1106,7 @@ async function pedirVelas(par, seg, cantidad) {
     const base = intentos[k];
     if (k === API_BINANCE.length) await esperar(1000);
     try {
-      const url = `${base}/api/v3/klines?symbol=${simbolo(par)}&interval=${INTERVALO_BINANCE[seg]}&limit=${Math.min(cantidad, 1000)}`;
+      const url = `${base}/api/v3/klines?symbol=${simbolo(par)}&interval=${INTERVALO_BINANCE[seg]}&limit=${Math.min(cantidad, 1000)}` + (desde ? `&startTime=${desde}` : "");
       // Si Binance no responde en 10 segundos, se pasa al otro dominio en vez de quedarse esperando.
       const datos = await conTiempo((async () => {
         const resp = await fetch(url);
@@ -1111,9 +1114,8 @@ async function pedirVelas(par, seg, cantidad) {
         return resp.json();
       })(), 10000);
       if (!Array.isArray(datos)) throw new Error(datos.msg || "respuesta inesperada");
-      return datos
-        .map(f => ({ t: Math.floor(f[0] / 1000), abre: +f[1], alto: +f[2], bajo: +f[3], cierra: +f[4], volumen: +f[5] }))
-        .slice(-cantidad);
+      const filas = datos.map(f => ({ t: Math.floor(f[0] / 1000), abre: +f[1], alto: +f[2], bajo: +f[3], cierra: +f[4], volumen: +f[5] }));
+      return desde ? filas : filas.slice(-cantidad);
     } catch (e) {
       // Prueba con el siguiente dominio. El aviso queda en la consola y la página sigue funcionando.
       const motivo = e.name === "AbortError" ? "sin respuesta en 10 segundos" : e.message;
@@ -1124,6 +1126,28 @@ async function pedirVelas(par, seg, cantidad) {
     throw new Error("estás abriendo el archivo descargado; para ver precios en vivo abre https://oscar-contres.github.io/senales/");
   }
   throw new Error("no se pudo conectar con Binance desde este navegador");
+}
+
+// Historial de un par y marco en CSV: fecha UTC, tiempo Unix, precios y volumen. Solo velas cerradas.
+// Pide el historial en bloques de 1000 velas, desde la fecha inicial hasta ahora.
+async function historialCsv(par, tiempo, dias, avance) {
+  const seg = TIEMPOS[tiempo];
+  const fin = Date.now();
+  let desde = fin - dias * 86400000;
+  const velas = [];
+  while (desde < fin) {
+    const lote = await pedirVelas(par, seg, 1000, desde);
+    if (!lote.length) break;
+    velas.push(...lote);
+    if (avance) avance(velas.length);
+    const siguiente = (lote[lote.length - 1].t + seg) * 1000;
+    if (lote.length < 1000 || siguiente <= desde) break;
+    desde = siguiente;
+  }
+  const listas = cerradas(velas, seg);
+  const filas = ["fecha_utc,t,abre,alto,bajo,cierra,volumen"];
+  for (const v of listas) filas.push(`${iso(v.t)},${v.t},${v.abre},${v.alto},${v.bajo},${v.cierra},${v.volumen}`);
+  return { csv: filas.join("\n") + "\n", velas: listas.length };
 }
 
 async function velasSuperiores(par, tiempo) {
@@ -2387,6 +2411,30 @@ for (const [id, clave] of [["f-volumen", "volumen"], ["f-agotamiento", "agotamie
 document.getElementById("pnl-monto").addEventListener("input", pintarPnL);
 
 document.getElementById("actualizar").addEventListener("click", refrescar);
+
+document.getElementById("descargar-csv").addEventListener("click", async () => {
+  const btn = document.getElementById("descargar-csv");
+  const info = document.getElementById("descarga-estado");
+  const par = estado.principal, tiempo = estado.tiempo;
+  btn.disabled = true;
+  info.textContent = `Descargando ${par.replace("-USD", "")} en ${tiempo}…`;
+  try {
+    const { csv, velas } = await historialCsv(par, tiempo, 365, n => { info.textContent = `Descargando… ${n} velas recibidas`; });
+    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `historial_${par}_${tiempo}_365d.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    info.textContent = `Listo: ${velas} velas cerradas de ${par.replace("-USD", "")} en ${tiempo}, último año.`;
+  } catch (e) {
+    info.textContent = `No se pudo descargar: ${e.message}`;
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 leerPrefs();
 document.getElementById("tamano").value = estado.tamano;
