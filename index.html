@@ -422,8 +422,14 @@ svg.grafica { display: block; width: 100%; max-width: 100%; height: auto; touch-
     </div>
     <div class="acciones"><button class="btn primario" id="direccion-btn" type="button" onclick="ejecutarMedirDireccion()">Medir acierto sube o baja</button></div>
     <div id="direccion-resultado"></div>
+    <div class="grupo"><span class="etiqueta">Periodo a descargar</span>
+      <select id="descarga-periodo" style="width:100%;max-width:100%">
+        <option value="ultimo" selected>Último año</option>
+        <option value="anterior">Año anterior (hace 1 a 2 años)</option>
+      </select>
+    </div>
     <div class="acciones"><button class="btn" id="descargar-csv" type="button">Descargar historial CSV (1 año)</button></div>
-    <p class="muted" id="descarga-estado">Descarga el marco seleccionado arriba. Para la hipótesis 1, selecciona 15 m.</p>
+    <p class="muted" id="descarga-estado">Descarga el marco seleccionado arriba. Para probar el bot en un año que no se ha usado, elige «Año anterior» y descarga 15 m y 1 h.</p>
   </section>
 
   <section class="panel" aria-label="Calculadora de riesgo">
@@ -1130,9 +1136,10 @@ async function pedirVelas(par, seg, cantidad, desde = null) {
 
 // Historial de un par y marco en CSV: fecha UTC, tiempo Unix, precios y volumen. Solo velas cerradas.
 // Pide el historial en bloques de 1000 velas, desde la fecha inicial hasta ahora.
-async function historialCsv(par, tiempo, dias, avance) {
+// `hastaDias` permite terminar el periodo antes de hoy (por ejemplo, para bajar el año anterior).
+async function historialCsv(par, tiempo, dias, avance, hastaDias = 0) {
   const seg = TIEMPOS[tiempo];
-  const fin = Date.now();
+  const fin = Date.now() - hastaDias * 86400000;
   let desde = fin - dias * 86400000;
   const velas = [];
   while (desde < fin) {
@@ -1144,7 +1151,7 @@ async function historialCsv(par, tiempo, dias, avance) {
     if (lote.length < 1000 || siguiente <= desde) break;
     desde = siguiente;
   }
-  const listas = cerradas(velas, seg);
+  const listas = cerradas(velas, seg, fin / 1000);
   const filas = ["fecha_utc,t,abre,alto,bajo,cierra,volumen"];
   for (const v of listas) filas.push(`${iso(v.t)},${v.t},${v.abre},${v.alto},${v.bajo},${v.cierra},${v.volumen}`);
   return { csv: filas.join("\n") + "\n", velas: listas.length };
@@ -2416,19 +2423,21 @@ document.getElementById("descargar-csv").addEventListener("click", async () => {
   const btn = document.getElementById("descargar-csv");
   const info = document.getElementById("descarga-estado");
   const par = estado.principal, tiempo = estado.tiempo;
+  const anterior = document.getElementById("descarga-periodo").value === "anterior";
+  const etiqueta = anterior ? "año anterior" : "último año";
   btn.disabled = true;
-  info.textContent = `Descargando ${par.replace("-USD", "")} en ${tiempo}…`;
+  info.textContent = `Descargando ${par.replace("-USD", "")} en ${tiempo} (${etiqueta})…`;
   try {
-    const { csv, velas } = await historialCsv(par, tiempo, 365, n => { info.textContent = `Descargando… ${n} velas recibidas`; });
+    const { csv, velas } = await historialCsv(par, tiempo, 365, n => { info.textContent = `Descargando… ${n} velas recibidas`; }, anterior ? 365 : 0);
     const url = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
     const a = document.createElement("a");
     a.href = url;
-    a.download = `historial_${par}_${tiempo}_365d.csv`;
+    a.download = `historial_${par}_${tiempo}_${anterior ? "anterior" : "ultimo"}_365d.csv`;
     document.body.appendChild(a);
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 10000);
-    info.textContent = `Listo: ${velas} velas cerradas de ${par.replace("-USD", "")} en ${tiempo}, último año.`;
+    info.textContent = `Listo: ${velas} velas cerradas de ${par.replace("-USD", "")} en ${tiempo}, ${etiqueta}.`;
   } catch (e) {
     info.textContent = `No se pudo descargar: ${e.message}`;
   } finally {
