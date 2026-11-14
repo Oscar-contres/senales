@@ -446,6 +446,25 @@ svg.grafica { display: block; width: 100%; max-width: 100%; height: auto; touch-
     <div id="pruebas-registradas"></div>
   </section>
 
+  <section class="panel comparar" aria-label="Cuenta de papel">
+    <div class="grupo">
+      <span class="etiqueta">Cuenta de papel: 100 USD</span>
+      <p class="muted">Simula una cuenta de 100 USD que sigue las señales del bot en BTC / USDT de 15 minutos, con el mismo stop y objetivo. No es dinero real. Solo avanza mientras la página está abierta, y cuenta las señales desde que se creó la cuenta.</p>
+    </div>
+    <div class="fila">
+      <div class="grupo">
+        <label class="etiqueta" for="cuenta-monto">Monto por operación (USD)</label>
+        <input id="cuenta-monto" type="number" inputmode="decimal" min="1" step="any" value="10">
+      </div>
+      <div class="grupo">
+        <label class="etiqueta" for="cuenta-comision">Comisión por lado (%)</label>
+        <input id="cuenta-comision" type="number" inputmode="decimal" min="0" step="0.01" value="0.1">
+      </div>
+    </div>
+    <div id="cuenta-resultado"></div>
+    <div class="acciones"><button class="btn" id="cuenta-reiniciar" type="button">Reiniciar cuenta en 100 USD</button></div>
+  </section>
+
   <section class="panel" aria-label="Calculadora de riesgo">
     <div class="grupo">
       <span class="etiqueta">Calculadora de riesgo</span>
@@ -1739,11 +1758,14 @@ function registrar(par, r) {
         e.resultado = ev.acierto ? "acierto" : "fallo";
         e.motivo = ev.motivo;
         e.salida = ev.salida;
+        if (e.par === CUENTA_PAPEL.par && e.tiempo === CUENTA_PAPEL.tiempo && !e.cuenta && e.hora >= cuentaPapel.creada) aplicarCuentaPapel(e);
       }
     }
   }
   registro = registro.slice(-300);
   guardarRegistro();
+  guardarCuentaPapel();
+  pintarCuentaPapel();
 }
 
 // ----- Tiempo real: WebSocket de Binance (precio al instante y compra/venta de cada operación) -----
@@ -2578,6 +2600,101 @@ function pintarPruebasRegistradas() {
     </table></div>
     <p class="muted">Con ${n} prueba(s) registradas, una prueba nueva necesita una confianza de ${fmtDec.format(confianza)}% para contar como ventaja, no 95%.</p>`;
 }
+
+// ---------- Cuenta de papel: 100 USD siguiendo las señales del bot (BTC / USDT, 15 m) ----------
+// Cada señal del registro se aplica una sola vez, al resolverse, con el mismo stop y objetivo del bot.
+// Solo cuentan las señales creadas después de abrir la cuenta.
+const CUENTA_PAPEL = { par: "BTC-USD", tiempo: "15m", capital: 100 };
+const CLAVE_CUENTA_PAPEL = "senales-cuenta-papel-v1";
+
+function cuentaNueva() {
+  return {
+    creada: Date.now(), capital: CUENTA_PAPEL.capital, saldo: CUENTA_PAPEL.capital,
+    monto: 10, comision: 0.1, ops: 0, aciertos: 0, pico: CUENTA_PAPEL.capital, caida: 0,
+    curva: [CUENTA_PAPEL.capital],
+  };
+}
+
+let cuentaPapel = (() => {
+  try {
+    const x = JSON.parse(localStorage.getItem(CLAVE_CUENTA_PAPEL) || "null");
+    return x && typeof x.saldo === "number" ? x : cuentaNueva();
+  } catch (e) {
+    return cuentaNueva();
+  }
+})();
+
+function guardarCuentaPapel() {
+  try {
+    localStorage.setItem(CLAVE_CUENTA_PAPEL, JSON.stringify(cuentaPapel));
+  } catch (e) {
+    // Sin almacenamiento, la cuenta dura solo mientras la página esté abierta.
+  }
+}
+
+// Aplica una operación resuelta. Ganancia o pérdida = monto × resultado neto después de comisiones.
+function aplicarCuentaPapel(e) {
+  const c = cuentaPapel;
+  if (c.saldo < c.monto) return false; // sin saldo suficiente para otra operación
+  const ret = (e.salida - e.precio) / e.precio;
+  const bruto = e.senal === "LONG" ? ret : -ret;
+  const neto = bruto - (2 * c.comision) / 100;
+  c.saldo += c.monto * neto;
+  c.ops++;
+  if (bruto > 0) c.aciertos++;
+  c.pico = Math.max(c.pico, c.saldo);
+  c.caida = Math.max(c.caida, c.pico - c.saldo);
+  c.curva.push(Number(c.saldo.toFixed(4)));
+  if (c.curva.length > 500) c.curva = c.curva.slice(-500);
+  e.cuenta = true;
+  return true;
+}
+
+function pintarCuentaPapel() {
+  const cont = document.getElementById("cuenta-resultado");
+  if (!cont) return;
+  const c = cuentaPapel;
+  const cambio = c.saldo - c.capital;
+  const color = cambio >= 0 ? "var(--buy)" : "var(--sell)";
+  const aciertoTxt = c.ops ? ` · Acierto ${fmtDec.format((c.aciertos / c.ops) * 100)}%` : "";
+  const sinSaldo = c.saldo < c.monto ? `<p class="error">Sin saldo para otra operación de ${fmtUsd.format(c.monto)}. La cuenta se detuvo.</p>` : "";
+  const serie = c.curva;
+  const W = 320, H = 110, m = 8;
+  const min = Math.min(...serie), max = Math.max(...serie), rango = max - min || 1;
+  const x = i => m + (i / ((serie.length - 1) || 1)) * (W - 2 * m);
+  const y = v => H - m - ((v - min) / rango) * (H - 2 * m);
+  const puntos = serie.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
+  cont.innerHTML = `
+    <p class="pnl-cifras"><strong style="color:${color}">Saldo: ${fmtUsd.format(c.saldo)}</strong> · Cambio: ${fmtUsd.format(cambio)} (${fmtDec.format((cambio / c.capital) * 100)}%)</p>
+    <p class="muted">Operaciones: ${c.ops}${aciertoTxt} · Caída máxima: ${fmtUsd.format(c.caida)} · Monto por operación: ${fmtUsd.format(c.monto)} · Comisión: ${fmtFino.format(c.comision)}% por lado</p>
+    ${sinSaldo}
+    <svg class="pnl-grafica" viewBox="0 0 ${W} ${H}" role="img" aria-label="Saldo de la cuenta de papel">
+      <line class="pnl-cero" x1="${m}" x2="${W - m}" y1="${y(c.capital).toFixed(1)}" y2="${y(c.capital).toFixed(1)}"/>
+      <polyline points="${puntos}" fill="none" style="stroke:${color}" stroke-width="2" stroke-linejoin="round"/>
+    </svg>
+    <p class="muted">La línea horizontal marca los 100 USD iniciales. Cada operación se aplica cuando la señal se resuelve, no cuando aparece.</p>`;
+}
+
+document.getElementById("cuenta-monto").value = cuentaPapel.monto;
+document.getElementById("cuenta-comision").value = cuentaPapel.comision;
+document.getElementById("cuenta-monto").addEventListener("change", e => {
+  const v = Number(e.target.value);
+  if (v > 0) { cuentaPapel.monto = v; guardarCuentaPapel(); pintarCuentaPapel(); }
+});
+document.getElementById("cuenta-comision").addEventListener("change", e => {
+  const v = Number(e.target.value);
+  if (v >= 0) { cuentaPapel.comision = v; guardarCuentaPapel(); pintarCuentaPapel(); }
+});
+document.getElementById("cuenta-reiniciar").addEventListener("click", () => {
+  if (!confirm("¿Reiniciar la cuenta en 100 USD? Se borra el historial de la cuenta.")) return;
+  const { monto, comision } = cuentaPapel;
+  cuentaPapel = cuentaNueva();
+  cuentaPapel.monto = monto;
+  cuentaPapel.comision = comision;
+  guardarCuentaPapel();
+  pintarCuentaPapel();
+});
+pintarCuentaPapel();
 
 leerPrefs();
 document.getElementById("tamano").value = estado.tamano;
