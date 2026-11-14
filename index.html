@@ -432,6 +432,20 @@ svg.grafica { display: block; width: 100%; max-width: 100%; height: auto; touch-
     <p class="muted" id="descarga-estado">Descarga el marco seleccionado arriba. Para probar el bot en un año que no se ha usado, elige «Año anterior» y descarga 15 m y 1 h.</p>
   </section>
 
+  <section class="panel comparar" aria-label="Prueba contra el azar">
+    <div class="grupo">
+      <span class="etiqueta">Prueba contra el azar</span>
+      <p class="muted">Usa las mismas velas, el mismo stop, objetivo, horizonte y comisión que el bot, pero elige la dirección al azar. Si el bot no le gana a ese azar, sus señales no aportan nada, aunque el resultado final sea positivo. Usa el par y el marco del gráfico principal, con historial largo.</p>
+    </div>
+    <div class="acciones"><button class="btn primario" id="azar-btn" type="button">Correr prueba contra el azar</button></div>
+    <div id="azar-resultado"></div>
+    <div class="grupo">
+      <span class="etiqueta">Pruebas registradas</span>
+      <p class="muted">Cada prueba nueva cuenta. Mientras más pruebas se hacen, más alta debe ser la confianza exigida para creer un resultado.</p>
+    </div>
+    <div id="pruebas-registradas"></div>
+  </section>
+
   <section class="panel" aria-label="Calculadora de riesgo">
     <div class="grupo">
       <span class="etiqueta">Calculadora de riesgo</span>
@@ -2445,6 +2459,126 @@ document.getElementById("descargar-csv").addEventListener("click", async () => {
   }
 });
 
+// ---------- Prueba contra el azar ----------
+// Mismas velas, stop, objetivo, horizonte y comisión que el bot. Solo cambia la dirección, que se elige al azar.
+// El generador tiene semilla fija: si se repite la prueba con los mismos datos, da el mismo resultado.
+function generadorAzar(semilla) {
+  let s = semilla >>> 0;
+  return () => {
+    s = (s + 0x6d2b79f5) >>> 0;
+    let t = s;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// Mismos niveles que usa decidir() para una señal en esa vela.
+function nivelesPara(senal, v, a) {
+  const dir = senal === "LONG" ? 1 : -1;
+  return { entrada: v.cierra, stop: v.cierra - dir * 1.5 * a, objetivo: v.cierra + dir * 3 * a, atr: a };
+}
+
+const SIMULACIONES_AZAR = 200;
+let azar = null;
+let midiendoAzar = false;
+
+async function calcularPruebaAzar(par, tiempo) {
+  const ind = await indicadoresParaSenal(par, tiempo, "largo");
+  const velas = ind.velas;
+  const horizonte = estado.horizonte, comision = estado.comision;
+  const bot = backtest(velas, ind, horizonte, comision);
+  if (!bot.res.length) throw new Error("el bot no dio señales en este periodo");
+  const medidaBot = metricas(bot.res);
+  const rng = generadorAzar(20261114);
+  const medias = [];
+  for (let s = 0; s < SIMULACIONES_AZAR; s++) {
+    let suma = 0, n = 0;
+    for (const x of bot.res) {
+      const senal = rng() < 0.5 ? "LONG" : "SHORT";
+      const r = resolverSenal(velas, x.i, senal, nivelesPara(senal, velas[x.i], ind.atr[x.i]), horizonte);
+      if (!r) continue;
+      suma += r.bruto - (2 * comision) / 100;
+      n++;
+    }
+    medias.push(n ? (suma / n) * 100 : 0);
+    if (s % 20 === 19) await esperar(0);
+  }
+  const ordenadas = [...medias].sort((x, y) => x - y);
+  const cuantil = q => ordenadas[Math.min(ordenadas.length - 1, Math.floor(q * ordenadas.length))];
+  return {
+    par, tiempo, horizonte, comision,
+    velas: velas.length, desde: velas[0].t, hasta: velas[velas.length - 1].t,
+    operaciones: bot.res.length,
+    bot: medidaBot.prom,
+    azarMedia: medias.reduce((s, x) => s + x, 0) / medias.length,
+    azarBajo: cuantil(0.025), azarAlto: cuantil(0.975),
+    // Porcentaje de simulaciones al azar que igualan o superan el resultado del bot.
+    p: (medias.filter(x => x >= medidaBot.prom).length / medias.length) * 100,
+  };
+}
+
+function veredictoAzar(r) {
+  const supera = r.p < 5 && r.bot !== null;
+  if (supera && r.bot > 0) return "El bot supera al azar y además es positivo después de comisiones. Antes de creerlo hay que probarlo con datos nuevos, no con estos.";
+  if (supera) return "El bot supera al azar, pero sigue negativo después de comisiones.";
+  return `No supera al azar: en ${fmtDec.format(r.p)}% de las simulaciones, elegir la dirección al azar dio un resultado igual o mejor que el del bot. Sus señales no aportan una ventaja medible.`;
+}
+
+function pintarPruebaAzar() {
+  const cont = document.getElementById("azar-resultado");
+  if (!azar) { cont.innerHTML = ""; return; }
+  if (azar.error) { cont.innerHTML = `<p class="error">No se pudo correr: ${esc(azar.error)}.</p>`; return; }
+  const pctf = x => `${fmtFino.format(x)}%`;
+  const fecha = s => new Date(s * 1000).toLocaleDateString("es", { timeZone: "America/Caracas", day: "numeric", month: "short", year: "numeric" });
+  cont.innerHTML = `<p class="muted">Par: ${esc(etiquetaPar(azar.par))}, marco ${esc(azar.tiempo)}, ${azar.velas.toLocaleString("es")} velas (${fecha(azar.desde)} a ${fecha(azar.hasta)}). Horizonte ${azar.horizonte} velas, comisión ${fmtFino.format(azar.comision)}% por lado.</p>
+    <div class="tabla-wrap"><table class="tabla">
+      <thead><tr><th></th><th>Operaciones</th><th>Neto promedio por operación</th></tr></thead>
+      <tbody>
+        <tr><td>Bot</td><td>${azar.operaciones}</td><td>${pctf(azar.bot)}</td></tr>
+        <tr><td>Dirección al azar (promedio de ${SIMULACIONES_AZAR} simulaciones)</td><td>${azar.operaciones}</td><td>${pctf(azar.azarMedia)} <small>rango 95%: ${pctf(azar.azarBajo)} a ${pctf(azar.azarAlto)}</small></td></tr>
+      </tbody>
+    </table></div>
+    <p class="muted">Simulaciones al azar que igualan o superan al bot: ${fmtDec.format(azar.p)}%. Para decir que supera al azar, deben ser menos de 5%.</p>
+    <p class="muted">${veredictoAzar(azar)}</p>`;
+}
+
+document.getElementById("azar-btn").addEventListener("click", async () => {
+  if (midiendoAzar) return;
+  midiendoAzar = true;
+  const btn = document.getElementById("azar-btn");
+  const cont = document.getElementById("azar-resultado");
+  btn.disabled = true;
+  cont.innerHTML = '<p class="muted">Simulando… con historial largo puede tardar unos segundos.</p>';
+  try {
+    azar = await calcularPruebaAzar(estado.principal, estado.tiempo);
+  } catch (e) {
+    azar = { error: e.message };
+  }
+  midiendoAzar = false;
+  btn.disabled = false;
+  pintarPruebaAzar();
+});
+
+// Pruebas hechas hasta hoy. Para agregar una, añade una línea aquí. Con n pruebas, la corrección de Bonferroni
+// exige una confianza de 100 − 5/n % en cada prueba nueva.
+const PRUEBAS_REGISTRADAS = [
+  { fecha: "14/11/2026", nombre: "Hipótesis 1: reversión tras 3 velas de 15 m", datos: "último año", resultado: "Fracaso" },
+  { fecha: "14/11/2026", nombre: "Bot tal como está, 15 m", datos: "año anterior", resultado: "Fracaso" },
+];
+
+function pintarPruebasRegistradas() {
+  const cont = document.getElementById("pruebas-registradas");
+  const n = PRUEBAS_REGISTRADAS.length;
+  const confianza = n ? 100 - 5 / n : 95;
+  const filas = PRUEBAS_REGISTRADAS.map(p => `<tr><td>${esc(p.fecha)}</td><td>${esc(p.nombre)}</td><td>${esc(p.datos)}</td><td>${esc(p.resultado)}</td></tr>`).join("");
+  cont.innerHTML = `<div class="tabla-wrap"><table class="tabla">
+      <thead><tr><th>Fecha</th><th>Prueba</th><th>Datos</th><th>Resultado</th></tr></thead>
+      <tbody>${filas}</tbody>
+    </table></div>
+    <p class="muted">Con ${n} prueba(s) registradas, una prueba nueva necesita una confianza de ${fmtDec.format(confianza)}% para contar como ventaja, no 95%.</p>`;
+}
+
 leerPrefs();
 document.getElementById("tamano").value = estado.tamano;
 registro = leerRegistro().filter(e => REG_MARCOS.includes(e.tiempo));
@@ -2452,6 +2586,7 @@ pintarControles();
 pintarTodas();
 pintarGrafico();
 pintarRegistro();
+pintarPruebasRegistradas();
 programar();
 conectarTiempoReal();
 setInterval(() => estado.pares.forEach(par => actualizarFlujo(par)), 5000);
